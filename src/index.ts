@@ -11,8 +11,31 @@
  * Learn more at https://developers.cloudflare.com/workers/
  */
 
+/**
+ * Add CORS headers for DuckDB WASM compatibility
+ */
+function addCors(headers: Headers) {
+	headers.set('Access-Control-Allow-Origin', '*');
+	headers.set('Access-Control-Allow-Methods', 'GET, HEAD, OPTIONS');
+	headers.set('Access-Control-Allow-Headers', 'Range');
+	headers.set('Access-Control-Expose-Headers', 'Content-Length, Content-Range, Accept-Ranges, ETag, Last-Modified');
+}
+
 export default {
 	async fetch(request: Request, env: any, ctx: ExecutionContext) {
+		// Handle CORS preflight requests
+		if (request.method === 'OPTIONS') {
+			return new Response(null, {
+				status: 204,
+				headers: {
+					'Access-Control-Allow-Origin': '*',
+					'Access-Control-Allow-Methods': 'GET, HEAD, OPTIONS',
+					'Access-Control-Allow-Headers': 'Range',
+					'Access-Control-Max-Age': '86400',
+				},
+			});
+		}
+
 		const url = new URL(request.url);
 
 		/**
@@ -21,7 +44,10 @@ export default {
 		 */
 		const encoded = url.searchParams.get('url');
 		if (!encoded) {
-			return new Response('Missing url parameter', { status: 400 });
+			const errorResponse = new Response('Missing url parameter', { status: 400 });
+			const headers = new Headers(errorResponse.headers);
+			addCors(headers);
+			return new Response(errorResponse.body, { status: 400, headers });
 		}
 
 		let targetUrl: string;
@@ -60,7 +86,13 @@ export default {
 				range: range ?? 'FULL',
 				status: cached.status,
 			});
-			return cached;
+			// Add CORS headers to cached response
+			const cachedHeaders = new Headers(cached.headers);
+			addCors(cachedHeaders);
+			return new Response(cached.body, {
+				status: cached.status,
+				headers: cachedHeaders,
+			});
 		}
 
 		console.log('[CF CACHE MISS]', {
@@ -94,6 +126,11 @@ export default {
 		 * Parquet files are immutable → cache forever
 		 */
 		responseHeaders.set('Cache-Control', 'public, max-age=31536000, immutable');
+
+		/**
+		 * Add CORS headers for DuckDB WASM compatibility
+		 */
+		addCors(responseHeaders);
 
 		/**
 		 * HEAD response must not include body
