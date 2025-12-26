@@ -9,11 +9,19 @@
  * - User-scoped cache keys to prevent cross-tenant cache collisions
  * - Path traversal protection
  * - Range request size limits
+ * - Origin validation via AUTHORIZED_ORIGINS
  */
 
 import type { Env } from './types';
 import { createPreflightResponse } from './cors';
-import { createErrorResponse, createHealthResponse, buildR2Response, buildCachedResponse, buildHeadResponse } from './response';
+import {
+	createErrorResponse,
+	createHealthResponse,
+	buildR2Response,
+	buildCachedResponse,
+	buildHeadResponse,
+	type CorsContext,
+} from './response';
 import { validateFileKey, validateFileAccess } from './security';
 import { authenticateRequest } from './auth';
 import { parseRangeHeader } from './range';
@@ -28,23 +36,30 @@ export default {
 		const method = request.method;
 		const metrics = createMetrics();
 
+		// Build CORS context from request and env
+		const origin = request.headers.get('Origin');
+		const cors: CorsContext = {
+			origin,
+			authorizedOrigins: env.AUTHORIZED_ORIGINS,
+		};
+
 		log.info(requestId, `📥 Request: ${method} ${url.pathname}`);
 
 		// ========== CORS Preflight ==========
 		if (method === 'OPTIONS') {
 			log.info(requestId, '✅ CORS preflight response');
-			return createPreflightResponse();
+			return createPreflightResponse(origin, env.AUTHORIZED_ORIGINS);
 		}
 
 		// ========== Health Check ==========
 		if (url.pathname === '/health') {
 			log.info(requestId, '✅ Health check OK');
-			return createHealthResponse();
+			return createHealthResponse(cors);
 		}
 
 		// ========== File Access: /file/{key} ==========
 		if (!url.pathname.startsWith('/file/')) {
-			return createErrorResponse('Not found', 404, requestId);
+			return createErrorResponse('Not found', 404, requestId, cors);
 		}
 
 		// Extract and validate file key
@@ -52,7 +67,7 @@ export default {
 		const keyError = validateFileKey(fileKey);
 		if (keyError) {
 			log.security(requestId, `Invalid file key - ${keyError}`);
-			return createErrorResponse('Forbidden - Invalid file path', 403, requestId);
+			return createErrorResponse('Forbidden - Invalid file path', 403, requestId, cors);
 		}
 
 		log.info(requestId, `📁 File key: ${fileKey}`);
@@ -62,18 +77,18 @@ export default {
 
 		const authResult = await authenticateRequest(request, env, requestId);
 		if (!authResult.success) {
-			return createErrorResponse(authResult.error, authResult.status, requestId);
+			return createErrorResponse(authResult.error, authResult.status, requestId, cors);
 		}
 
 		const { internalUserId } = authResult;
 		metrics.authTimeMs = authResult.durationMs;
 
 		// ========== Authorization ==========
-		// Use internal user ID from header (validated by Clerk auth) to check file ownership
+		// Use internal user ID from JWT claims to check file ownership
 		const accessError = validateFileAccess(fileKey, internalUserId);
 		if (accessError) {
 			log.security(requestId, `Access denied - ${accessError}`);
-			return createErrorResponse('Forbidden - Access denied', 403, requestId);
+			return createErrorResponse('Forbidden - Access denied', 403, requestId, cors);
 		}
 
 		log.info(requestId, '✅ Authorization passed');
@@ -87,7 +102,7 @@ export default {
 
 		if (rangeError) {
 			log.warn(requestId, `Invalid range request: ${rangeError}`);
-			return createErrorResponse(`Bad Request - ${rangeError}`, 400, requestId);
+			return createErrorResponse(`Bad Request - ${rangeError}`, 400, requestId, cors);
 		}
 
 		// ========== Cache Lookup ==========
@@ -102,7 +117,7 @@ export default {
 			log.info(requestId, `📦 CACHE HIT | User: ${internalUserId} | Range: ${rangeHeader ?? 'FULL'}`);
 			logMetrics(requestId, metrics);
 
-			return buildCachedResponse(cached, isHead);
+			return buildCachedResponse(cached, isHead, cors);
 		}
 
 		log.info(requestId, `📭 CACHE MISS | User: ${internalUserId} | Range: ${rangeHeader ?? 'FULL'}`);
@@ -117,7 +132,7 @@ export default {
 
 			if (object === null) {
 				log.warn(requestId, `R2 object not found: ${fileKey}`);
-				return createErrorResponse('Not found', 404, requestId);
+				return createErrorResponse('Not found', 404, requestId, cors);
 			}
 
 			metrics.r2FetchTimeMs = performance.now() - fetchStart;
@@ -125,7 +140,7 @@ export default {
 
 			log.info(requestId, `✅ R2 HEAD complete | Size: ${object.size} bytes | Time: ${metrics.r2FetchTimeMs.toFixed(2)}ms`);
 
-			const { response } = buildHeadResponse(object);
+			const { response } = buildHeadResponse(object, cors);
 			cacheResponse(ctx, cacheKey, response);
 
 			metrics.totalTimeMs = performance.now() - requestStart;
@@ -141,7 +156,7 @@ export default {
 
 		if (object === null) {
 			log.warn(requestId, `R2 object not found: ${fileKey}`);
-			return createErrorResponse('Not found', 404, requestId);
+			return createErrorResponse('Not found', 404, requestId, cors);
 		}
 
 		metrics.r2FetchTimeMs = performance.now() - fetchStart;
@@ -150,7 +165,7 @@ export default {
 		log.info(requestId, `✅ R2 fetch complete | Size: ${object.size} bytes | Time: ${metrics.r2FetchTimeMs.toFixed(2)}ms`);
 
 		// ========== Build and Cache Response ==========
-		const { response, status } = buildR2Response(object, range);
+		const { response, status } = buildR2Response(object, range, cors);
 
 		if (status === 200 || status === 206) {
 			cacheResponse(ctx, cacheKey, response);

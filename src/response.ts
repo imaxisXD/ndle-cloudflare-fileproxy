@@ -7,11 +7,19 @@ import { CACHE_MAX_AGE_SECONDS } from './config';
 import { buildContentRangeHeader } from './range';
 
 /**
+ * CORS context passed to response builders
+ */
+export interface CorsContext {
+	origin: string | null;
+	authorizedOrigins: string | undefined;
+}
+
+/**
  * Create error response with CORS headers
  */
-export function createErrorResponse(message: string, status: number, requestId: string): Response {
+export function createErrorResponse(message: string, status: number, requestId: string, cors?: CorsContext): Response {
 	console.log(`[FileProxy] [${requestId}] ❌ Error response: ${status} - ${message}`);
-	const headers = new Headers(getCorsHeaders());
+	const headers = new Headers(getCorsHeaders(cors?.origin ?? null, cors?.authorizedOrigins));
 	headers.set('Content-Type', 'application/json');
 	return new Response(JSON.stringify({ error: message }), { status, headers });
 }
@@ -19,17 +27,21 @@ export function createErrorResponse(message: string, status: number, requestId: 
 /**
  * Create health check response
  */
-export function createHealthResponse(): Response {
+export function createHealthResponse(cors?: CorsContext): Response {
 	return new Response(JSON.stringify({ status: 'ok' }), {
 		status: 200,
-		headers: { 'Content-Type': 'application/json', ...getCorsHeaders() },
+		headers: { 'Content-Type': 'application/json', ...getCorsHeaders(cors?.origin ?? null, cors?.authorizedOrigins) },
 	});
 }
 
 /**
  * Build response from R2 object body (GET request)
  */
-export function buildR2Response(object: R2ObjectBody, range: R2Range | undefined): { response: Response; status: number } {
+export function buildR2Response(
+	object: R2ObjectBody,
+	range: R2Range | undefined,
+	cors: CorsContext
+): { response: Response; status: number } {
 	const responseHeaders = new Headers();
 
 	// Copy HTTP metadata from R2 object
@@ -48,7 +60,7 @@ export function buildR2Response(object: R2ObjectBody, range: R2Range | undefined
 	responseHeaders.set('Cache-Control', `public, max-age=${CACHE_MAX_AGE_SECONDS}, immutable`);
 
 	// Add CORS headers
-	addCorsHeaders(responseHeaders);
+	addCorsHeaders(responseHeaders, cors.origin, cors.authorizedOrigins);
 
 	// Determine status code
 	let status = 200;
@@ -70,7 +82,7 @@ export function buildR2Response(object: R2ObjectBody, range: R2Range | undefined
 /**
  * Build response from R2 object metadata (HEAD request)
  */
-export function buildHeadResponse(object: R2Object): { response: Response; status: number } {
+export function buildHeadResponse(object: R2Object, cors: CorsContext): { response: Response; status: number } {
 	const responseHeaders = new Headers();
 
 	// Copy HTTP metadata from R2 object
@@ -92,7 +104,7 @@ export function buildHeadResponse(object: R2Object): { response: Response; statu
 	responseHeaders.set('Cache-Control', `public, max-age=${CACHE_MAX_AGE_SECONDS}, immutable`);
 
 	// Add CORS headers
-	addCorsHeaders(responseHeaders);
+	addCorsHeaders(responseHeaders, cors.origin, cors.authorizedOrigins);
 
 	return {
 		response: new Response(null, { status: 200, headers: responseHeaders }),
@@ -103,9 +115,9 @@ export function buildHeadResponse(object: R2Object): { response: Response; statu
 /**
  * Build cached response with CORS headers
  */
-export function buildCachedResponse(cached: Response, isHead: boolean): Response {
+export function buildCachedResponse(cached: Response, isHead: boolean, cors: CorsContext): Response {
 	const cachedHeaders = new Headers(cached.headers);
-	addCorsHeaders(cachedHeaders);
+	addCorsHeaders(cachedHeaders, cors.origin, cors.authorizedOrigins);
 
 	if (isHead) {
 		return new Response(null, {
