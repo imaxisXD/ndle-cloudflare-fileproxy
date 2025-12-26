@@ -22,13 +22,16 @@ export interface AuthError {
 export type AuthResponse = AuthResult | AuthError;
 
 /**
- * Authenticate request using Clerk JWT and extract internal user ID from header
- * Uses networkless verification when CLERK_JWT_KEY is provided
+ * Authenticate request using Clerk JWT and extract internal user ID from session claims.
+ * Uses networkless verification when CLERK_JWT_KEY is provided.
  *
  * Security model:
  * - Clerk JWT proves the user is authenticated
- * - Internal user ID from header identifies which user's files to access
- * - The frontend is trusted to pass the correct internal user ID for the authenticated user
+ * - Internal user ID is read from the JWT's session claims (public_metadata.convex_user_id)
+ * - This prevents IDOR attacks since the ID cannot be spoofed via headers
+ *
+ * The JWT session claims must be configured in Clerk Dashboard:
+ * Sessions → Customize session token → Add: { "convex_user_id": "{{user.public_metadata.convex_user_id}}" }
  */
 export async function authenticateRequest(request: Request, env: Env, requestId: string): Promise<AuthResponse> {
 	const authStart = performance.now();
@@ -40,17 +43,6 @@ export async function authenticateRequest(request: Request, env: Env, requestId:
 		return {
 			success: false,
 			error: 'Unauthorized - Missing Bearer token',
-			status: 401,
-		};
-	}
-
-	// Check for internal user ID header
-	const internalUserId = request.headers.get('X-Internal-User-Id');
-	if (!internalUserId) {
-		log.warn(requestId, 'Missing X-Internal-User-Id header');
-		return {
-			success: false,
-			error: 'Unauthorized - Missing internal user ID',
 			status: 401,
 		};
 	}
@@ -94,7 +86,8 @@ export async function authenticateRequest(request: Request, env: Env, requestId:
 			};
 		}
 
-		const clerkUserId = authResult.toAuth().userId;
+		const auth = authResult.toAuth();
+		const clerkUserId = auth.userId;
 		if (!clerkUserId) {
 			log.warn(requestId, 'Authentication failed: No user ID in token');
 			return {
@@ -104,8 +97,23 @@ export async function authenticateRequest(request: Request, env: Env, requestId:
 			};
 		}
 
+		// Extract internal user ID from JWT session claims
+		// This is set in Clerk Dashboard: Sessions → Customize session token
+		// Template: { "convex_user_id": "{{user.public_metadata.convex_user_id}}" }
+		const sessionClaims = auth.sessionClaims as Record<string, unknown> | undefined;
+		const internalUserId = sessionClaims?.convex_user_id as string | undefined;
+
+		if (!internalUserId) {
+			log.warn(requestId, 'Missing convex_user_id in JWT claims - user may need to re-login or Clerk session template not configured');
+			return {
+				success: false,
+				error: 'Unauthorized - Session not configured correctly. Please log out and log back in.',
+				status: 401,
+			};
+		}
+
 		const durationMs = performance.now() - authStart;
-		log.info(requestId, `✅ Authenticated: Clerk=${clerkUserId} Internal=${internalUserId} (${durationMs.toFixed(2)}ms)`);
+		log.info(requestId, `✅ Authenticated: Clerk=${clerkUserId} Convex=${internalUserId} (${durationMs.toFixed(2)}ms)`);
 
 		return { success: true, clerkUserId, internalUserId, durationMs };
 	} catch (err: unknown) {

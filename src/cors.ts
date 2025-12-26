@@ -5,7 +5,7 @@
 const CORS_HEADERS = {
 	'Access-Control-Allow-Origin': '*',
 	'Access-Control-Allow-Methods': 'GET, HEAD, OPTIONS',
-	'Access-Control-Allow-Headers': 'Range, Authorization',
+	'Access-Control-Allow-Headers': 'Range, Authorization, X-Internal-User-Id',
 	'Access-Control-Expose-Headers': 'Content-Length, Content-Range, Accept-Ranges, ETag, Last-Modified',
 } as const;
 
