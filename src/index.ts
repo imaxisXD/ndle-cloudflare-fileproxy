@@ -1,164 +1,164 @@
 /**
- * Welcome to Cloudflare Workers! This is your first worker.
+ * Cloudflare Worker: Analytics File Proxy with Clerk Authentication
  *
- * - Run `npm run dev` in your terminal to start a development server
- * - Open a browser tab at http://localhost:8787/ to see your worker in action
- * - Run `npm run deploy` to publish your worker
+ * This worker provides authenticated access to parquet files stored in R2.
+ * It uses Clerk JWT tokens for authentication and the Cache API for performance.
  *
- * Bind resources to your worker in `wrangler.jsonc`. After adding bindings, a type definition for the
- * `Env` object can be regenerated with `npm run cf-typegen`.
- *
- * Learn more at https://developers.cloudflare.com/workers/
+ * Security features:
+ * - Clerk JWT verification (networkless when CLERK_JWT_KEY is provided)
+ * - User-scoped cache keys to prevent cross-tenant cache collisions
+ * - Path traversal protection
+ * - Range request size limits
  */
 
-/**
- * Add CORS headers for DuckDB WASM compatibility
- */
-function addCors(headers: Headers) {
-	headers.set('Access-Control-Allow-Origin', '*');
-	headers.set('Access-Control-Allow-Methods', 'GET, HEAD, OPTIONS');
-	headers.set('Access-Control-Allow-Headers', 'Range');
-	headers.set('Access-Control-Expose-Headers', 'Content-Length, Content-Range, Accept-Ranges, ETag, Last-Modified');
-}
+import type { Env } from './types';
+import { createPreflightResponse } from './cors';
+import { createErrorResponse, createHealthResponse, buildR2Response, buildCachedResponse, buildHeadResponse } from './response';
+import { validateFileKey, validateFileAccess } from './security';
+import { authenticateRequest } from './auth';
+import { parseRangeHeader } from './range';
+import { buildCacheKey, cacheResponse } from './cache';
+import { log, logMetrics, createMetrics } from './logging';
 
 export default {
-	async fetch(request: Request, env: any, ctx: ExecutionContext) {
-		// Handle CORS preflight requests
-		if (request.method === 'OPTIONS') {
-			return new Response(null, {
-				status: 204,
-				headers: {
-					'Access-Control-Allow-Origin': '*',
-					'Access-Control-Allow-Methods': 'GET, HEAD, OPTIONS',
-					'Access-Control-Allow-Headers': 'Range',
-					'Access-Control-Max-Age': '86400',
-				},
-			});
-		}
-
+	async fetch(request: Request, env: Env, ctx: ExecutionContext): Promise<Response> {
+		const requestStart = performance.now();
 		const url = new URL(request.url);
-
-		/**
-		 * Expected:
-		 *   /analytics/file?url=<ENCODED_PRESIGNED_R2_URL>
-		 */
-		const encoded = url.searchParams.get('url');
-		if (!encoded) {
-			const errorResponse = new Response('Missing url parameter', { status: 400 });
-			const headers = new Headers(errorResponse.headers);
-			addCors(headers);
-			return new Response(errorResponse.body, { status: 400, headers });
-		}
-
-		let targetUrl: string;
-		try {
-			targetUrl = decodeURIComponent(encoded);
-		} catch {
-			targetUrl = encoded;
-		}
-
+		const requestId = crypto.randomUUID().slice(0, 8);
 		const method = request.method;
-		const incomingRange = request.headers.get('range');
+		const metrics = createMetrics();
 
-		/**
-		 * DuckDB issues HEAD first.
-		 * Presigned R2 URLs do NOT support HEAD.
-		 * We emulate HEAD with GET bytes=0-0.
-		 */
+		log.info(requestId, `📥 Request: ${method} ${url.pathname}`);
+
+		// ========== CORS Preflight ==========
+		if (method === 'OPTIONS') {
+			log.info(requestId, '✅ CORS preflight response');
+			return createPreflightResponse();
+		}
+
+		// ========== Health Check ==========
+		if (url.pathname === '/health') {
+			log.info(requestId, '✅ Health check OK');
+			return createHealthResponse();
+		}
+
+		// ========== File Access: /file/{key} ==========
+		if (!url.pathname.startsWith('/file/')) {
+			return createErrorResponse('Not found', 404, requestId);
+		}
+
+		// Extract and validate file key
+		const fileKey = decodeURIComponent(url.pathname.slice(6));
+		const keyError = validateFileKey(fileKey);
+		if (keyError) {
+			log.security(requestId, `Invalid file key - ${keyError}`);
+			return createErrorResponse('Forbidden - Invalid file path', 403, requestId);
+		}
+
+		log.info(requestId, `📁 File key: ${fileKey}`);
+
+		// ========== Authentication ==========
+		log.info(requestId, `🔐 Auth header present: ${!!request.headers.get('Authorization')}`);
+
+		const authResult = await authenticateRequest(request, env, requestId);
+		if (!authResult.success) {
+			return createErrorResponse(authResult.error, authResult.status, requestId);
+		}
+
+		const { userId } = authResult;
+		metrics.authTimeMs = authResult.durationMs;
+
+		// ========== Authorization ==========
+		const accessError = validateFileAccess(fileKey, userId);
+		if (accessError) {
+			log.security(requestId, `Access denied - ${accessError}`);
+			return createErrorResponse('Forbidden - Access denied', 403, requestId);
+		}
+
+		log.info(requestId, '✅ Authorization passed');
+
+		// ========== Range Validation (GET only) ==========
+		const rangeHeader = request.headers.get('Range');
 		const isHead = method === 'HEAD';
 
-		const range = incomingRange ?? (isHead ? 'bytes=0-0' : undefined);
+		// Only parse range for GET requests
+		const { range, error: rangeError } = isHead ? { range: undefined, error: undefined } : parseRangeHeader(rangeHeader);
 
-		/**
-		 * Cache key MUST include Range header
-		 */
-		const cacheKey = new Request(request.url, {
-			method: 'GET',
-			headers: range ? { range } : {},
-		});
+		if (rangeError) {
+			log.warn(requestId, `Invalid range request: ${rangeError}`);
+			return createErrorResponse(`Bad Request - ${rangeError}`, 400, requestId);
+		}
 
-		const cache = caches.default;
+		// ========== Cache Lookup ==========
+		const cacheKey = buildCacheKey(request.url, userId, rangeHeader ?? undefined);
+		const cached = await caches.default.match(cacheKey);
 
-		// -------- CACHE LOOKUP --------
-		let cached = await cache.match(cacheKey);
 		if (cached) {
-			console.log('[CF CACHE HIT]', {
-				range: range ?? 'FULL',
-				status: cached.status,
-			});
-			// Add CORS headers to cached response
-			const cachedHeaders = new Headers(cached.headers);
-			addCors(cachedHeaders);
-			return new Response(cached.body, {
-				status: cached.status,
-				headers: cachedHeaders,
-			});
+			metrics.cacheHit = true;
+			metrics.bytesTransferred = parseInt(cached.headers.get('Content-Length') || '0', 10);
+			metrics.totalTimeMs = performance.now() - requestStart;
+
+			log.info(requestId, `📦 CACHE HIT | User: ${userId} | Range: ${rangeHeader ?? 'FULL'}`);
+			logMetrics(requestId, metrics);
+
+			return buildCachedResponse(cached, isHead);
 		}
 
-		console.log('[CF CACHE MISS]', {
-			range: range ?? 'FULL',
-		});
+		log.info(requestId, `📭 CACHE MISS | User: ${userId} | Range: ${rangeHeader ?? 'FULL'}`);
 
-		// -------- FETCH FROM R2 --------
-		const upstreamHeaders = new Headers();
-		if (range) {
-			upstreamHeaders.set('range', range);
-		}
+		// ========== Fetch from R2 ==========
+		const fetchStart = performance.now();
+		log.info(requestId, `🗄️ Fetching from R2: ${fileKey}`);
 
-		const upstream = await fetch(targetUrl, {
-			method: 'GET',
-			headers: upstreamHeaders,
-			redirect: 'manual',
-		});
-
-		/**
-		 * Forward only required headers
-		 */
-		const responseHeaders = new Headers();
-		const passthroughHeaders = ['content-type', 'content-length', 'content-range', 'accept-ranges', 'etag', 'last-modified'];
-
-		for (const h of passthroughHeaders) {
-			const v = upstream.headers.get(h);
-			if (v) responseHeaders.set(h, v);
-		}
-
-		/**
-		 * Parquet files are immutable → cache forever
-		 */
-		responseHeaders.set('Cache-Control', 'public, max-age=31536000, immutable');
-
-		/**
-		 * Add CORS headers for DuckDB WASM compatibility
-		 */
-		addCors(responseHeaders);
-
-		/**
-		 * HEAD response must not include body
-		 */
+		// Use R2.head() for HEAD requests (no body, just metadata)
 		if (isHead) {
-			const headResponse = new Response(null, {
-				status: upstream.ok ? 200 : upstream.status,
-				headers: responseHeaders,
-			});
+			const object = await env.ANALYTICS_BUCKET.head(fileKey);
 
-			if (upstream.status === 200 || upstream.status === 206) {
-				ctx.waitUntil(cache.put(cacheKey, headResponse.clone()));
+			if (object === null) {
+				log.warn(requestId, `R2 object not found: ${fileKey}`);
+				return createErrorResponse('Not found', 404, requestId);
 			}
 
-			return headResponse;
+			metrics.r2FetchTimeMs = performance.now() - fetchStart;
+			metrics.bytesTransferred = 0;
+
+			log.info(requestId, `✅ R2 HEAD complete | Size: ${object.size} bytes | Time: ${metrics.r2FetchTimeMs.toFixed(2)}ms`);
+
+			const { response } = buildHeadResponse(object);
+			cacheResponse(ctx, cacheKey, response);
+
+			metrics.totalTimeMs = performance.now() - requestStart;
+			log.info(requestId, `📤 HEAD response sent | Size: ${object.size}`);
+			logMetrics(requestId, metrics);
+
+			return response;
 		}
 
-		const response = new Response(upstream.body, {
-			status: upstream.status,
-			headers: responseHeaders,
-		});
+		// GET request - fetch with optional range
+		const r2Options: R2GetOptions = range ? { range } : {};
+		const object = await env.ANALYTICS_BUCKET.get(fileKey, r2Options);
 
-		/**
-		 * Cache successful reads only
-		 */
-		if (upstream.status === 200 || upstream.status === 206) {
-			ctx.waitUntil(cache.put(cacheKey, response.clone()));
+		if (object === null) {
+			log.warn(requestId, `R2 object not found: ${fileKey}`);
+			return createErrorResponse('Not found', 404, requestId);
 		}
+
+		metrics.r2FetchTimeMs = performance.now() - fetchStart;
+		metrics.bytesTransferred = object.size;
+
+		log.info(requestId, `✅ R2 fetch complete | Size: ${object.size} bytes | Time: ${metrics.r2FetchTimeMs.toFixed(2)}ms`);
+
+		// ========== Build and Cache Response ==========
+		const { response, status } = buildR2Response(object, range);
+
+		if (status === 200 || status === 206) {
+			cacheResponse(ctx, cacheKey, response);
+			log.info(requestId, '💾 Response cached');
+		}
+
+		metrics.totalTimeMs = performance.now() - requestStart;
+		log.info(requestId, `📤 Response sent | Status: ${status} | Size: ${object.size}`);
+		logMetrics(requestId, metrics);
 
 		return response;
 	},
