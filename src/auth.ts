@@ -8,7 +8,8 @@ import { log } from './logging';
 
 export interface AuthResult {
 	success: true;
-	userId: string;
+	clerkUserId: string;
+	internalUserId: string;
 	durationMs: number;
 }
 
@@ -21,8 +22,13 @@ export interface AuthError {
 export type AuthResponse = AuthResult | AuthError;
 
 /**
- * Authenticate request using Clerk JWT
+ * Authenticate request using Clerk JWT and extract internal user ID from header
  * Uses networkless verification when CLERK_JWT_KEY is provided
+ *
+ * Security model:
+ * - Clerk JWT proves the user is authenticated
+ * - Internal user ID from header identifies which user's files to access
+ * - The frontend is trusted to pass the correct internal user ID for the authenticated user
  */
 export async function authenticateRequest(request: Request, env: Env, requestId: string): Promise<AuthResponse> {
 	const authStart = performance.now();
@@ -34,6 +40,17 @@ export async function authenticateRequest(request: Request, env: Env, requestId:
 		return {
 			success: false,
 			error: 'Unauthorized - Missing Bearer token',
+			status: 401,
+		};
+	}
+
+	// Check for internal user ID header
+	const internalUserId = request.headers.get('X-Internal-User-Id');
+	if (!internalUserId) {
+		log.warn(requestId, 'Missing X-Internal-User-Id header');
+		return {
+			success: false,
+			error: 'Unauthorized - Missing internal user ID',
 			status: 401,
 		};
 	}
@@ -77,8 +94,8 @@ export async function authenticateRequest(request: Request, env: Env, requestId:
 			};
 		}
 
-		const userId = authResult.toAuth().userId;
-		if (!userId) {
+		const clerkUserId = authResult.toAuth().userId;
+		if (!clerkUserId) {
 			log.warn(requestId, 'Authentication failed: No user ID in token');
 			return {
 				success: false,
@@ -88,9 +105,9 @@ export async function authenticateRequest(request: Request, env: Env, requestId:
 		}
 
 		const durationMs = performance.now() - authStart;
-		log.info(requestId, `✅ Authenticated user: ${userId} (${durationMs.toFixed(2)}ms)`);
+		log.info(requestId, `✅ Authenticated: Clerk=${clerkUserId} Internal=${internalUserId} (${durationMs.toFixed(2)}ms)`);
 
-		return { success: true, userId, durationMs };
+		return { success: true, clerkUserId, internalUserId, durationMs };
 	} catch (err: unknown) {
 		const message = err instanceof Error ? err.message : String(err);
 		log.error(requestId, 'Token verification failed', message);

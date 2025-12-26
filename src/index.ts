@@ -65,11 +65,12 @@ export default {
 			return createErrorResponse(authResult.error, authResult.status, requestId);
 		}
 
-		const { userId } = authResult;
+		const { internalUserId } = authResult;
 		metrics.authTimeMs = authResult.durationMs;
 
 		// ========== Authorization ==========
-		const accessError = validateFileAccess(fileKey, userId);
+		// Use internal user ID from header (validated by Clerk auth) to check file ownership
+		const accessError = validateFileAccess(fileKey, internalUserId);
 		if (accessError) {
 			log.security(requestId, `Access denied - ${accessError}`);
 			return createErrorResponse('Forbidden - Access denied', 403, requestId);
@@ -90,7 +91,7 @@ export default {
 		}
 
 		// ========== Cache Lookup ==========
-		const cacheKey = buildCacheKey(request.url, userId, rangeHeader ?? undefined);
+		const cacheKey = buildCacheKey(request.url, internalUserId, rangeHeader ?? undefined);
 		const cached = await caches.default.match(cacheKey);
 
 		if (cached) {
@@ -98,13 +99,13 @@ export default {
 			metrics.bytesTransferred = parseInt(cached.headers.get('Content-Length') || '0', 10);
 			metrics.totalTimeMs = performance.now() - requestStart;
 
-			log.info(requestId, `📦 CACHE HIT | User: ${userId} | Range: ${rangeHeader ?? 'FULL'}`);
+			log.info(requestId, `📦 CACHE HIT | User: ${internalUserId} | Range: ${rangeHeader ?? 'FULL'}`);
 			logMetrics(requestId, metrics);
 
 			return buildCachedResponse(cached, isHead);
 		}
 
-		log.info(requestId, `📭 CACHE MISS | User: ${userId} | Range: ${rangeHeader ?? 'FULL'}`);
+		log.info(requestId, `📭 CACHE MISS | User: ${internalUserId} | Range: ${rangeHeader ?? 'FULL'}`);
 
 		// ========== Fetch from R2 ==========
 		const fetchStart = performance.now();
