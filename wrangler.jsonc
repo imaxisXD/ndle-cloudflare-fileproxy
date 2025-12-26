@@ -44,7 +44,13 @@
 			"name": "proxy-file-worker-dev",
 			"vars": {
 				"AUTHORIZED_ORIGINS": "http://localhost:3000,https://dev.ndle.app"
-			}
+			},
+			"r2_buckets": [
+				{
+					"binding": "ANALYTICS_BUCKET",
+					"bucket_name": "ndle-analytics"
+				}
+			]
 			// Secrets: Set with `npx wrangler secret put CLERK_SECRET_KEY --env dev`
 		},
 
@@ -57,7 +63,13 @@
 			"name": "proxy-file-worker-prod",
 			"vars": {
 				"AUTHORIZED_ORIGINS": "https://ndle.app,https://www.ndle.app"
-			}
+			},
+			"r2_buckets": [
+				{
+					"binding": "ANALYTICS_BUCKET",
+					"bucket_name": "ndle-analytics"
+				}
+			]
 			// Secrets: Set with `npx wrangler secret put CLERK_SECRET_KEY --env prod`
 		}
 	}
