@@ -28,6 +28,10 @@ import { parseRangeHeader } from './range';
 import { buildCacheKey, cacheResponse } from './cache';
 import { log, logMetrics, createMetrics } from './logging';
 
+// Public route handlers (no auth required)
+import { handleFlagRequest } from './routes/flag';
+import { handleFaviconRequest } from './routes/favicon';
+
 export default {
 	async fetch(request: Request, env: Env, ctx: ExecutionContext): Promise<Response> {
 		const requestStart = performance.now();
@@ -57,7 +61,26 @@ export default {
 			return createHealthResponse(cors);
 		}
 
-		// ========== File Access: /file/{key} ==========
+		// ========== Public Routes (no auth required) ==========
+		// Flag proxy: /flag?code=us
+		if (url.pathname === '/flag') {
+			log.info(requestId, '🏳️ Flag proxy request');
+			return handleFlagRequest(request, ctx, {
+				origin,
+				authorizedOrigins: env.AUTHORIZED_ORIGINS,
+			});
+		}
+
+		// Favicon proxy: /favicon?url=https://example.com
+		if (url.pathname === '/favicon') {
+			log.info(requestId, '🖼️ Favicon proxy request');
+			return handleFaviconRequest(request, ctx, {
+				origin,
+				authorizedOrigins: env.AUTHORIZED_ORIGINS,
+			});
+		}
+
+		// ========== File Access: /file/{key} (auth required) ==========
 		if (!url.pathname.startsWith('/file/')) {
 			return createErrorResponse('Not found', 404, requestId, cors);
 		}
