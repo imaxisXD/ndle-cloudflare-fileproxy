@@ -73,7 +73,15 @@ export async function handleFlagRequest(request: Request, ctx: ExecutionContext,
 	// Check cache first
 	const cached = await cache.match(cacheKey);
 	if (cached) {
-		return cached;
+		// Clone cached response and apply current origin's CORS headers
+		const headers = new Headers(cached.headers);
+		const corsHeaders = getCorsHeaders(origin, authorizedOrigins);
+		Object.entries(corsHeaders).forEach(([key, value]) => headers.set(key, value as string));
+		return new Response(cached.body, {
+			status: cached.status,
+			statusText: cached.statusText,
+			headers,
+		});
 	}
 
 	// Fetch from upstream
