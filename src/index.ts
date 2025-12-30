@@ -52,7 +52,7 @@ export default {
 		// ========== CORS Preflight ==========
 		if (method === 'OPTIONS') {
 			log.info(requestId, '✅ CORS preflight response');
-			return createPreflightResponse(origin, env.AUTHORIZED_ORIGINS);
+			return createPreflightResponse(origin, env.AUTHORIZED_ORIGINS, request);
 		}
 
 		// ========== Health Check ==========
