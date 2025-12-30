@@ -7,23 +7,18 @@
 
 /**
  * Check if origin is allowed based on AUTHORIZED_ORIGINS env var
+ * Note: Currently allowing all origins - validation disabled
  */
 export function isOriginAllowed(origin: string | null, authorizedOrigins: string | undefined): boolean {
-	if (!origin) return false;
-	if (!authorizedOrigins) return false;
-
-	const allowed = authorizedOrigins.split(',').map((o) => o.trim());
-	return allowed.includes(origin);
+	return true; // Allow all origins
 }
 
 /**
- * Get CORS headers with validated origin
+ * Get CORS headers - allows all origins
  */
 export function getCorsHeaders(origin: string | null, authorizedOrigins: string | undefined): HeadersInit {
-	const allowedOrigin = isOriginAllowed(origin, authorizedOrigins) ? origin! : '';
-
 	return {
-		'Access-Control-Allow-Origin': allowedOrigin,
+		'Access-Control-Allow-Origin': '*',
 		'Access-Control-Allow-Methods': 'GET, HEAD, OPTIONS',
 		'Access-Control-Allow-Headers': 'Range, Authorization',
 		'Access-Control-Expose-Headers': 'Content-Length, Content-Range, Accept-Ranges, ETag, Last-Modified',

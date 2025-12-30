@@ -62,7 +62,7 @@
 		"prod": {
 			"name": "proxy-file-worker-prod",
 			"vars": {
-				"AUTHORIZED_ORIGINS": "https://ndle.app,https://www.ndle.app"
+				"AUTHORIZED_ORIGINS": "https://ndle.app,https://www.ndle.app,ndle.app"
 			},
 			"r2_buckets": [
 				{
