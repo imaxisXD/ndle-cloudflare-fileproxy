@@ -47,7 +47,13 @@ export default {
 			authorizedOrigins: env.AUTHORIZED_ORIGINS,
 		};
 
-		log.info(requestId, `📥 Request: ${method} ${url.pathname}`);
+		// Strip /apiv2 prefix if present (for same-origin routing via Cloudflare)
+		let pathname = url.pathname;
+		if (pathname.startsWith('/apiv2')) {
+			pathname = pathname.slice(6) || '/'; // '/apiv2/favicon' -> '/favicon'
+		}
+
+		log.info(requestId, `📥 Request: ${method} ${pathname}`);
 
 		// ========== CORS Preflight ==========
 		if (method === 'OPTIONS') {
@@ -56,14 +62,14 @@ export default {
 		}
 
 		// ========== Health Check ==========
-		if (url.pathname === '/health') {
+		if (pathname === '/health') {
 			log.info(requestId, '✅ Health check OK');
 			return createHealthResponse(cors);
 		}
 
 		// ========== Public Routes (no auth required) ==========
 		// Flag proxy: /flag?code=us
-		if (url.pathname === '/flag') {
+		if (pathname === '/flag') {
 			log.info(requestId, '🏳️ Flag proxy request');
 			return handleFlagRequest(request, ctx, {
 				origin,
@@ -72,7 +78,7 @@ export default {
 		}
 
 		// Favicon proxy: /favicon?url=https://example.com
-		if (url.pathname === '/favicon') {
+		if (pathname === '/favicon') {
 			log.info(requestId, '🖼️ Favicon proxy request');
 			return handleFaviconRequest(request, ctx, {
 				origin,
@@ -81,12 +87,12 @@ export default {
 		}
 
 		// ========== File Access: /file/{key} (auth required) ==========
-		if (!url.pathname.startsWith('/file/')) {
+		if (!pathname.startsWith('/file/')) {
 			return createErrorResponse('Not found', 404, requestId, cors);
 		}
 
 		// Extract and validate file key
-		const fileKey = decodeURIComponent(url.pathname.slice(6));
+		const fileKey = decodeURIComponent(pathname.slice(6));
 		const keyError = validateFileKey(fileKey);
 		if (keyError) {
 			log.security(requestId, `Invalid file key - ${keyError}`);
