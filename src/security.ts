@@ -36,8 +36,8 @@ export function validateFileKey(fileKey: string): string | null {
 		return 'Invalid characters in file key';
 	}
 
-	// Must start with expected prefix
-	if (!fileKey.startsWith('analytics/')) {
+	// Must start with expected prefix (support both legacy and new formats)
+	if (!fileKey.startsWith('analytics/') && !fileKey.startsWith('archive/')) {
 		return 'Invalid file path prefix';
 	}
 
