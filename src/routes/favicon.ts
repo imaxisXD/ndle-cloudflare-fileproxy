@@ -8,7 +8,7 @@
  * Returns: { faviconUrl: "...", domain: "..." }
  */
 
-import { getCorsHeaders } from '../cors';
+import { addCorsHeaders } from '../cors';
 import { DYNAMIC_CACHE_HEADERS, ERROR_CACHE_HEADERS, NO_CACHE_HEADERS } from './cache-headers';
 import { validateUrl } from './url-validation';
 
@@ -22,26 +22,24 @@ function createErrorResponse(
 	authorizedOrigins: string,
 	cacheHeaders: Record<string, string>
 ): Response {
+	const headers = new Headers(cacheHeaders);
+	addCorsHeaders(headers, origin, authorizedOrigins);
 	return Response.json(
 		{ error: message },
 		{
 			status,
-			headers: {
-				...getCorsHeaders(origin, authorizedOrigins),
-				...cacheHeaders,
-			},
+			headers,
 		}
 	);
 }
 
 /** Create success response with cache headers */
 function createSuccessResponse(data: { faviconUrl: string; domain: string }, origin: string | null, authorizedOrigins: string): Response {
+	const headers = new Headers(DYNAMIC_CACHE_HEADERS);
+	addCorsHeaders(headers, origin, authorizedOrigins);
 	return Response.json(data, {
 		status: 200,
-		headers: {
-			...getCorsHeaders(origin, authorizedOrigins),
-			...DYNAMIC_CACHE_HEADERS,
-		},
+		headers,
 	});
 }
 
@@ -82,8 +80,7 @@ export async function handleFaviconRequest(request: Request, ctx: ExecutionConte
 	if (cached) {
 		// Clone cached response and apply current origin's CORS headers
 		const headers = new Headers(cached.headers);
-		const corsHeaders = getCorsHeaders(origin, authorizedOrigins);
-		Object.entries(corsHeaders).forEach(([key, value]) => headers.set(key, value as string));
+		addCorsHeaders(headers, origin, authorizedOrigins);
 		return new Response(cached.body, {
 			status: cached.status,
 			statusText: cached.statusText,

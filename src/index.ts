@@ -87,12 +87,17 @@ export default {
 		}
 
 		// ========== File Access: /file/{key} (auth required) ==========
-		if (!pathname.startsWith('/file/')) {
-			return createErrorResponse('Not found', 404, requestId, cors);
-		}
+			if (!pathname.startsWith('/file/')) {
+				return createErrorResponse('Not found', 404, requestId, cors);
+			}
 
-		// Extract and validate file key
-		const fileKey = decodeURIComponent(pathname.slice(6));
+			if (method !== 'GET' && method !== 'HEAD') {
+				log.warn(requestId, `Method not allowed for file access: ${method}`);
+				return createErrorResponse('Method not allowed', 405, requestId, cors);
+			}
+
+			// Extract and validate file key
+			const fileKey = decodeURIComponent(pathname.slice(6));
 		const keyError = validateFileKey(fileKey);
 		if (keyError) {
 			log.security(requestId, `Invalid file key - ${keyError}`);
@@ -135,8 +140,8 @@ export default {
 		}
 
 		// ========== Cache Lookup ==========
-		const cacheKey = buildCacheKey(request.url, internalUserId, rangeHeader ?? undefined);
-		const cached = await caches.default.match(cacheKey);
+		const cacheKey = isHead ? null : buildCacheKey(request.url, internalUserId, rangeHeader ?? undefined);
+		const cached = cacheKey ? await caches.default.match(cacheKey) : undefined;
 
 		if (cached) {
 			metrics.cacheHit = true;
@@ -170,7 +175,6 @@ export default {
 			log.info(requestId, `✅ R2 HEAD complete | Size: ${object.size} bytes | Time: ${metrics.r2FetchTimeMs.toFixed(2)}ms`);
 
 			const { response } = buildHeadResponse(object, cors);
-			cacheResponse(ctx, cacheKey, response);
 
 			metrics.totalTimeMs = performance.now() - requestStart;
 			log.info(requestId, `📤 HEAD response sent | Size: ${object.size}`);
@@ -197,7 +201,7 @@ export default {
 		const { response, status } = buildR2Response(object, range, cors);
 
 		if (status === 200 || status === 206) {
-			cacheResponse(ctx, cacheKey, response);
+			if (cacheKey) cacheResponse(ctx, cacheKey, response);
 			log.info(requestId, '💾 Response cached');
 		}
 

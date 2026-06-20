@@ -7,7 +7,7 @@
  * Usage: GET /flag?code=us
  */
 
-import { getCorsHeaders } from '../cors';
+import { addCorsHeaders } from '../cors';
 import { STATIC_CACHE_HEADERS, ERROR_CACHE_HEADERS, NO_CACHE_HEADERS } from './cache-headers';
 
 const FLAG_BASE_URL = 'https://hatscripts.github.io/circle-flags/flags';
@@ -25,14 +25,13 @@ function createErrorResponse(
 	authorizedOrigins: string,
 	cacheHeaders: Record<string, string>
 ): Response {
+	const headers = new Headers(cacheHeaders);
+	addCorsHeaders(headers, origin, authorizedOrigins);
 	return Response.json(
 		{ error: message },
 		{
 			status,
-			headers: {
-				...getCorsHeaders(origin, authorizedOrigins),
-				...cacheHeaders,
-			},
+			headers,
 		}
 	);
 }
@@ -75,8 +74,7 @@ export async function handleFlagRequest(request: Request, ctx: ExecutionContext,
 	if (cached) {
 		// Clone cached response and apply current origin's CORS headers
 		const headers = new Headers(cached.headers);
-		const corsHeaders = getCorsHeaders(origin, authorizedOrigins);
-		Object.entries(corsHeaders).forEach(([key, value]) => headers.set(key, value as string));
+		addCorsHeaders(headers, origin, authorizedOrigins);
 		return new Response(cached.body, {
 			status: cached.status,
 			statusText: cached.statusText,
@@ -103,13 +101,12 @@ export async function handleFlagRequest(request: Request, ctx: ExecutionContext,
 		const svgContent = await response.text();
 
 		// Build response with aggressive cache headers
+		const headers = new Headers(STATIC_CACHE_HEADERS);
+		headers.set('Content-Type', 'image/svg+xml');
+		addCorsHeaders(headers, origin, authorizedOrigins);
 		const flagResponse = new Response(svgContent, {
 			status: 200,
-			headers: {
-				'Content-Type': 'image/svg+xml',
-				...getCorsHeaders(origin, authorizedOrigins),
-				...STATIC_CACHE_HEADERS,
-			},
+			headers,
 		});
 
 		// Cache the response (non-blocking)

@@ -8,7 +8,12 @@
  */
 export function extractUserIdFromKey(key: string): string | null {
 	const match = key.match(/user_id=([^/]+)/);
-	return match ? match[1] : null;
+	if (!match) return null;
+	try {
+		return decodeURIComponent(match[1]);
+	} catch {
+		return match[1];
+	}
 }
 
 /**
@@ -60,7 +65,7 @@ export function validateFileAccess(fileKey: string, userId: string): string | nu
 		return 'Could not extract user_id from file key';
 	}
 
-	if (fileUserId !== userId) {
+	if (fileUserId !== userId && fileUserId !== `user:${userId}`) {
 		return `User ${userId} attempted to access file owned by ${fileUserId}`;
 	}
 

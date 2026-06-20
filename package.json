@@ -3,10 +3,14 @@
 	"version": "0.0.0",
 	"private": true,
 	"scripts": {
-		"deploy": "wrangler deploy",
-		"dev": "wrangler dev",
-		"start": "wrangler dev",
-		"test": "vitest",
+		"deploy": "wrangler deploy --env prod",
+		"deploy:dev": "wrangler deploy --env dev",
+		"deploy:prod": "wrangler deploy --env prod",
+		"deploy:dry-run": "wrangler deploy --env prod --dry-run",
+		"dev": "wrangler dev --env dev",
+		"start": "wrangler dev --env dev",
+		"test": "vitest run",
+		"typecheck": "tsc --noEmit",
 		"cf-typegen": "wrangler types"
 	},
 	"dependencies": {
