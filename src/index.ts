@@ -1,17 +1,3 @@
-/**
- * Cloudflare Worker: Analytics File Proxy with Clerk Authentication
- *
- * This worker provides authenticated access to parquet files stored in R2.
- * It uses Clerk JWT tokens for authentication and the Cache API for performance.
- *
- * Security features:
- * - Clerk JWT verification (networkless when CLERK_JWT_KEY is provided)
- * - User-scoped cache keys to prevent cross-tenant cache collisions
- * - Path traversal protection
- * - Range request size limits
- * - Origin validation via AUTHORIZED_ORIGINS
- */
-
 import type { Env } from './types';
 import { createPreflightResponse } from './cors';
 import {
@@ -22,193 +8,160 @@ import {
 	buildHeadResponse,
 	type CorsContext,
 } from './response';
-import { validateFileKey, validateFileAccess } from './security';
+import { validateFileKey } from './security';
 import { authenticateRequest } from './auth';
-import { parseRangeHeader } from './range';
+import { hasArchiveAccess } from './archive-access';
+import { parseRangeHeader, resolveFileRange } from './range';
 import { buildCacheKey, cacheResponse } from './cache';
-import { log, logMetrics, createMetrics } from './logging';
-
-// Public route handlers (no auth required)
+import { MAX_RANGE_SIZE_BYTES } from './config';
 import { handleFlagRequest } from './routes/flag';
 import { handleFaviconRequest } from './routes/favicon';
 
 export default {
-	async fetch(request: Request, env: Env, ctx: ExecutionContext): Promise<Response> {
-		const requestStart = performance.now();
+	async fetch(
+		request: Request,
+		env: Env,
+		ctx: ExecutionContext,
+	): Promise<Response> {
+		const start = performance.now();
+		const requestId = crypto.randomUUID();
 		const url = new URL(request.url);
-		const requestId = crypto.randomUUID().slice(0, 8);
-		const method = request.method;
-		const metrics = createMetrics();
-
-		// Build CORS context from request and env
 		const origin = request.headers.get('Origin');
 		const cors: CorsContext = {
 			origin,
 			authorizedOrigins: env.AUTHORIZED_ORIGINS,
 		};
-
-		// Strip /apiv2 prefix if present (for same-origin routing via Cloudflare)
-		let pathname = url.pathname;
-		if (pathname.startsWith('/apiv2')) {
-			pathname = pathname.slice(6) || '/'; // '/apiv2/favicon' -> '/favicon'
-		}
-
-		log.info(requestId, `📥 Request: ${method} ${pathname}`);
-
-		// ========== CORS Preflight ==========
-		if (method === 'OPTIONS') {
-			log.info(requestId, '✅ CORS preflight response');
+		const pathname = url.pathname.startsWith('/apiv2/')
+			? url.pathname.slice(6)
+			: url.pathname;
+		if (request.method === 'OPTIONS')
 			return createPreflightResponse(origin, env.AUTHORIZED_ORIGINS, request);
-		}
-
-		// ========== Health Check ==========
-		if (pathname === '/health') {
-			log.info(requestId, '✅ Health check OK');
-			return createHealthResponse(cors);
-		}
-
-		// ========== Public Routes (no auth required) ==========
-		// Flag proxy: /flag?code=us
-		if (pathname === '/flag') {
-			log.info(requestId, '🏳️ Flag proxy request');
-			return handleFlagRequest(request, ctx, {
-				origin,
-				authorizedOrigins: env.AUTHORIZED_ORIGINS,
-			});
-		}
-
-		// Favicon proxy: /favicon?url=https://example.com
-		if (pathname === '/favicon') {
-			log.info(requestId, '🖼️ Favicon proxy request');
-			return handleFaviconRequest(request, ctx, {
-				origin,
-				authorizedOrigins: env.AUTHORIZED_ORIGINS,
-			});
-		}
-
-		// ========== File Access: /file/{key} (auth required) ==========
-			if (!pathname.startsWith('/file/')) {
-				return createErrorResponse('Not found', 404, requestId, cors);
-			}
-
-			if (method !== 'GET' && method !== 'HEAD') {
-				log.warn(requestId, `Method not allowed for file access: ${method}`);
-				return createErrorResponse('Method not allowed', 405, requestId, cors);
-			}
-
-			// Extract and validate file key
-			const fileKey = decodeURIComponent(pathname.slice(6));
-		const keyError = validateFileKey(fileKey);
-		if (keyError) {
-			log.security(requestId, `Invalid file key - ${keyError}`);
-			return createErrorResponse('Forbidden - Invalid file path', 403, requestId, cors);
-		}
-
-		log.info(requestId, `📁 File key: ${fileKey}`);
-
-		// ========== Authentication ==========
-		log.info(requestId, `🔐 Auth header present: ${!!request.headers.get('Authorization')}`);
-
-		const authResult = await authenticateRequest(request, env, requestId);
-		if (!authResult.success) {
-			return createErrorResponse(authResult.error, authResult.status, requestId, cors);
-		}
-
-		const { internalUserId } = authResult;
-		metrics.authTimeMs = authResult.durationMs;
-
-		// ========== Authorization ==========
-		// Use internal user ID from JWT claims to check file ownership
-		const accessError = validateFileAccess(fileKey, internalUserId);
-		if (accessError) {
-			log.security(requestId, `Access denied - ${accessError}`);
-			return createErrorResponse('Forbidden - Access denied', 403, requestId, cors);
-		}
-
-		log.info(requestId, '✅ Authorization passed');
-
-		// ========== Range Validation (GET only) ==========
-		const rangeHeader = request.headers.get('Range');
-		const isHead = method === 'HEAD';
-
-		// Only parse range for GET requests
-		const { range, error: rangeError } = isHead ? { range: undefined, error: undefined } : parseRangeHeader(rangeHeader);
-
-		if (rangeError) {
-			log.warn(requestId, `Invalid range request: ${rangeError}`);
-			return createErrorResponse(`Bad Request - ${rangeError}`, 400, requestId, cors);
-		}
-
-		// ========== Cache Lookup ==========
-		const cacheKey = isHead ? null : buildCacheKey(request.url, internalUserId, rangeHeader ?? undefined);
-		const cached = cacheKey ? await caches.default.match(cacheKey) : undefined;
-
-		if (cached) {
-			metrics.cacheHit = true;
-			metrics.bytesTransferred = parseInt(cached.headers.get('Content-Length') || '0', 10);
-			metrics.totalTimeMs = performance.now() - requestStart;
-
-			log.info(requestId, `📦 CACHE HIT | User: ${internalUserId} | Range: ${rangeHeader ?? 'FULL'}`);
-			logMetrics(requestId, metrics);
-
-			return buildCachedResponse(cached, cors);
-		}
-
-		log.info(requestId, `📭 CACHE MISS | User: ${internalUserId} | Range: ${rangeHeader ?? 'FULL'}`);
-
-		// ========== Fetch from R2 ==========
-		const fetchStart = performance.now();
-		log.info(requestId, `🗄️ Fetching from R2: ${fileKey}`);
-
-		// Use R2.head() for HEAD requests (no body, just metadata)
-		if (isHead) {
-			const object = await env.ANALYTICS_BUCKET.head(fileKey);
-
-			if (object === null) {
-				log.warn(requestId, `R2 object not found: ${fileKey}`);
-				return createErrorResponse('Not found', 404, requestId, cors);
-			}
-
-			metrics.r2FetchTimeMs = performance.now() - fetchStart;
-			metrics.bytesTransferred = 0;
-
-			log.info(requestId, `✅ R2 HEAD complete | Size: ${object.size} bytes | Time: ${metrics.r2FetchTimeMs.toFixed(2)}ms`);
-
-			const response = buildHeadResponse(object, cors);
-
-			metrics.totalTimeMs = performance.now() - requestStart;
-			log.info(requestId, `📤 HEAD response sent | Size: ${object.size}`);
-			logMetrics(requestId, metrics);
-
-			return response;
-		}
-
-		// GET request - fetch with optional range
-		const r2Options: R2GetOptions = range ? { range } : {};
-		const object = await env.ANALYTICS_BUCKET.get(fileKey, r2Options);
-
-		if (object === null) {
-			log.warn(requestId, `R2 object not found: ${fileKey}`);
+		if (pathname === '/health') return createHealthResponse(cors);
+		const publicCors = { origin, authorizedOrigins: env.AUTHORIZED_ORIGINS };
+		if (pathname === '/flag')
+			return handleFlagRequest(request, ctx, publicCors);
+		if (pathname === '/favicon')
+			return handleFaviconRequest(request, ctx, publicCors);
+		if (!pathname.startsWith('/file/'))
 			return createErrorResponse('Not found', 404, requestId, cors);
+		if (request.method !== 'GET' && request.method !== 'HEAD')
+			return createErrorResponse('Method not allowed', 405, requestId, cors);
+
+		let fileKey: string;
+		try {
+			fileKey = decodeURIComponent(pathname.slice(6));
+		} catch {
+			return createErrorResponse(
+				'The file path is invalid',
+				400,
+				requestId,
+				cors,
+			);
 		}
+		if (validateFileKey(fileKey))
+			return createErrorResponse(
+				'Forbidden - Invalid file path',
+				403,
+				requestId,
+				cors,
+			);
+		const auth = await authenticateRequest(request, env, requestId);
+		if (!auth.success)
+			return createErrorResponse(auth.error, auth.status, requestId, cors);
 
-		metrics.r2FetchTimeMs = performance.now() - fetchStart;
-		metrics.bytesTransferred = object.size;
-
-		log.info(requestId, `✅ R2 fetch complete | Size: ${object.size} bytes | Time: ${metrics.r2FetchTimeMs.toFixed(2)}ms`);
-
-		// ========== Build and Cache Response ==========
-		const { response, status } = buildR2Response(object, range, cors);
-
-		if (status === 200 || status === 206) {
-			if (cacheKey) cacheResponse(ctx, cacheKey, response);
-			log.info(requestId, '💾 Response cached');
+		try {
+			// Check the indexed archive grant before every read, including cache hits.
+			// This is also the authority for guest files claimed by this account.
+			if (!(await hasArchiveAccess(fileKey, auth.internalUserId, env))) {
+				return createErrorResponse(
+					'Forbidden - Access denied',
+					403,
+					requestId,
+					cors,
+				);
+			}
+			if (request.method === 'HEAD') {
+				const object = await env.ANALYTICS_BUCKET.head(fileKey);
+				return object
+					? buildHeadResponse(object, cors)
+					: createErrorResponse('Not found', 404, requestId, cors);
+			}
+			const parsed = parseRangeHeader(request.headers.get('Range'));
+			if (parsed.error)
+				return createErrorResponse(parsed.error, 400, requestId, cors);
+			const cacheKey = buildCacheKey(
+				request.url,
+				auth.internalUserId,
+				parsed.range ? JSON.stringify(parsed.range) : undefined,
+			);
+			const cached = await caches.default.match(cacheKey);
+			if (cached) {
+				console.info(
+					JSON.stringify({
+						message: 'Archive read completed',
+						request_id: requestId,
+						cache_hit: true,
+						latency_ms: performance.now() - start,
+					}),
+				);
+				return buildCachedResponse(cached, cors);
+			}
+			let range = parsed.range;
+			if (range) {
+				const metadata = await env.ANALYTICS_BUCKET.head(fileKey);
+				if (!metadata)
+					return createErrorResponse('Not found', 404, requestId, cors);
+				const resolved = resolveFileRange(range, metadata.size);
+				if (!resolved) {
+					const response = createErrorResponse(
+						'The requested file part is outside this file',
+						416,
+						requestId,
+						cors,
+					);
+					response.headers.set('Content-Range', `bytes */${metadata.size}`);
+					return response;
+				}
+				if (resolved.length > MAX_RANGE_SIZE_BYTES)
+					return createErrorResponse(
+						'Request a file part of 50 MB or less',
+						400,
+						requestId,
+						cors,
+					);
+				range = resolved;
+			}
+			const object = await env.ANALYTICS_BUCKET.get(
+				fileKey,
+				range ? { range } : undefined,
+			);
+			if (!object)
+				return createErrorResponse('Not found', 404, requestId, cors);
+			const { response } = buildR2Response(object, range, cors);
+			cacheResponse(ctx, cacheKey, response);
+			console.info(
+				JSON.stringify({
+					message: 'Archive read completed',
+					request_id: requestId,
+					cache_hit: false,
+					latency_ms: performance.now() - start,
+				}),
+			);
+			return response;
+		} catch (error) {
+			console.error(
+				JSON.stringify({
+					message: 'Archive read failed',
+					request_id: requestId,
+					error: String(error),
+				}),
+			);
+			return createErrorResponse(
+				'This file is temporarily unavailable. Please try again.',
+				503,
+				requestId,
+				cors,
+			);
 		}
-
-		metrics.totalTimeMs = performance.now() - requestStart;
-		log.info(requestId, `📤 Response sent | Status: ${status} | Size: ${object.size}`);
-		logMetrics(requestId, metrics);
-
-		return response;
 	},
-};
+} satisfies ExportedHandler<Env>;

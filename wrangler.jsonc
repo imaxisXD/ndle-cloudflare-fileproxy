@@ -18,7 +18,7 @@
 	"r2_buckets": [
 		{
 			"binding": "ANALYTICS_BUCKET",
-			"bucket_name": "ndle-analytics"
+		"bucket_name": "ndle-analytics-dev"
 		}
 	],
 
@@ -27,7 +27,9 @@
 	 * Note: Secrets (CLERK_SECRET_KEY, etc.) are set per-environment
 	 */
 	"vars": {
-		"AUTHORIZED_ORIGINS": "http://localhost:3000"
+		"AUTHORIZED_ORIGINS": "http://localhost:3000",
+		"CONVEX_URL": "https://tame-sparrow-238.convex.cloud",
+		"FILE_ACCESS_ENDPOINT": "http://localhost:3001/internal/archive-access"
 	},
 
 	/**
@@ -43,12 +45,14 @@
 		"dev": {
 			"name": "proxy-file-worker-dev",
 			"vars": {
-				"AUTHORIZED_ORIGINS": "http://localhost:3000,https://dev.ndle.app"
+				"AUTHORIZED_ORIGINS": "http://localhost:3000,https://dev.ndle.app",
+				"CONVEX_URL": "https://tame-sparrow-238.convex.cloud",
+				"FILE_ACCESS_ENDPOINT": ""
 			},
 			"r2_buckets": [
 				{
 					"binding": "ANALYTICS_BUCKET",
-					"bucket_name": "ndle-analytics"
+					"bucket_name": "ndle-analytics-dev"
 				}
 			]
 			// Secrets: Set with `npx wrangler secret put CLERK_SECRET_KEY --env dev`
@@ -62,7 +66,9 @@
 		"prod": {
 			"name": "proxy-file-worker-prod",
 			"vars": {
-				"AUTHORIZED_ORIGINS": "https://ndle.app,https://www.ndle.app"
+				"AUTHORIZED_ORIGINS": "https://ndle.app,https://www.ndle.app",
+				"CONVEX_URL": "https://cheery-starling-175.convex.cloud",
+				"FILE_ACCESS_ENDPOINT": "https://api.ndle.app/internal/archive-access"
 			},
 			"r2_buckets": [
 				{

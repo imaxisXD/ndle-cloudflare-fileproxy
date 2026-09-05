@@ -16,10 +16,51 @@ export interface AuthResult {
 export interface AuthError {
 	success: false;
 	error: string;
-	status: 401 | 500;
+	status: 401 | 500 | 503;
 }
 
 export type AuthResponse = AuthResult | AuthError;
+
+function isObject(value: unknown): value is Record<string, unknown> {
+	return value !== null && typeof value === 'object' && !Array.isArray(value);
+}
+
+/** Called only after Clerk has verified this exact token and its authorized origin. */
+async function readAccountFromConvex(
+	env: Env,
+	authorization: string,
+): Promise<string> {
+	if (!env.CONVEX_URL)
+		throw new Error('Account verification is not configured');
+	const response = await fetch(new URL('/api/query', env.CONVEX_URL), {
+		method: 'POST',
+		headers: {
+			Authorization: authorization,
+			'Content-Type': 'application/json',
+		},
+		body: JSON.stringify({
+			path: 'users:getViewerState',
+			args: {},
+			format: 'json',
+		}),
+		signal: AbortSignal.timeout(5_000),
+		cache: 'no-store',
+	});
+	if (response.status !== 200)
+		throw new Error('Account verification is unavailable');
+	const body: unknown = await response.json();
+	if (
+		!isObject(body) ||
+		body.status !== 'success' ||
+		!isObject(body.value) ||
+		body.value.isSignedIn !== true ||
+		typeof body.value.userId !== 'string' ||
+		!body.value.userId.trim()
+	) {
+		throw new Error('Account setup is not ready');
+	}
+	return body.value.userId;
+}
 
 /**
  * Authenticate request using Clerk JWT and extract internal user ID from session claims.
@@ -27,13 +68,17 @@ export type AuthResponse = AuthResult | AuthError;
  *
  * Security model:
  * - Clerk JWT proves the user is authenticated
- * - Internal user ID is read from the JWT's session claims (public_metadata.convex_user_id)
+ * - The internal account ID comes from verified claims or Convex's authenticated viewer query
  * - This prevents IDOR attacks since the ID cannot be spoofed via headers
  *
  * The JWT session claims must be configured in Clerk Dashboard:
  * Sessions → Customize session token → Add: { "convex_user_id": "{{user.public_metadata.convex_user_id}}" }
  */
-export async function authenticateRequest(request: Request, env: Env, requestId: string): Promise<AuthResponse> {
+export async function authenticateRequest(
+	request: Request,
+	env: Env,
+	requestId: string,
+): Promise<AuthResponse> {
 	const authStart = performance.now();
 
 	// Check for Authorization header
@@ -64,11 +109,16 @@ export async function authenticateRequest(request: Request, env: Env, requestId:
 	}
 
 	// Parse authorized origins
-	const authorizedParties = env.AUTHORIZED_ORIGINS ? env.AUTHORIZED_ORIGINS.split(',').map((o) => o.trim()) : [];
+	const authorizedParties = env.AUTHORIZED_ORIGINS
+		? env.AUTHORIZED_ORIGINS.split(',').map((o) => o.trim())
+		: [];
 
 	// Log auth mode
 	const isNetworkless = !!env.CLERK_JWT_KEY;
-	log.info(requestId, `🔑 Auth mode: ${isNetworkless ? 'NETWORKLESS (fast)' : 'NETWORK (slower)'}`);
+	log.info(
+		requestId,
+		`🔑 Auth mode: ${isNetworkless ? 'NETWORKLESS (fast)' : 'NETWORK (slower)'}`,
+	);
 
 	// Verify the token
 	try {
@@ -100,20 +150,37 @@ export async function authenticateRequest(request: Request, env: Env, requestId:
 		// Extract internal user ID from JWT session claims
 		// This is set in Clerk Dashboard: Sessions → Customize session token
 		// Template: { "convex_user_id": "{{user.public_metadata.convex_user_id}}" }
-		const sessionClaims = auth.sessionClaims as Record<string, unknown> | undefined;
-		const internalUserId = sessionClaims?.convex_user_id as string | undefined;
+		const sessionClaims = auth.sessionClaims as
+			| Record<string, unknown>
+			| undefined;
+		const claimedUserId = sessionClaims?.convex_user_id;
+		let internalUserId: string;
 
-		if (!internalUserId) {
-			log.warn(requestId, 'Missing convex_user_id in JWT claims - user may need to re-login or Clerk session template not configured');
-			return {
-				success: false,
-				error: 'Unauthorized - Session not configured correctly. Please log out and log back in.',
-				status: 401,
-			};
+		if (typeof claimedUserId === 'string' && claimedUserId.trim()) {
+			internalUserId = claimedUserId;
+		} else {
+			try {
+				// Fresh sessions can precede metadata delivery. The caller supplies a Convex-template
+				// JWT, and Convex resolves its own authenticated identity; no account header is used.
+				internalUserId = await readAccountFromConvex(env, authHeader);
+			} catch (error) {
+				log.warn(
+					requestId,
+					`Account lookup is not ready: ${error instanceof Error ? error.message : 'query failed'}`,
+				);
+				return {
+					success: false,
+					error: 'Account verification is not ready. Please try again shortly.',
+					status: 503,
+				};
+			}
 		}
 
 		const durationMs = performance.now() - authStart;
-		log.info(requestId, `✅ Authenticated: Clerk=${clerkUserId} Convex=${internalUserId} (${durationMs.toFixed(2)}ms)`);
+		log.info(
+			requestId,
+			`✅ Authenticated: Clerk=${clerkUserId} Convex=${internalUserId} (${durationMs.toFixed(2)}ms)`,
+		);
 
 		return { success: true, clerkUserId, internalUserId, durationMs };
 	} catch (err: unknown) {

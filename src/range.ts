@@ -1,82 +1,77 @@
-/**
- * Range header parsing utilities
- */
-
 import { MAX_RANGE_SIZE_BYTES, MAX_SUFFIX_SIZE_BYTES } from './config';
 import type { ParsedRange } from './types';
 
-/**
- * Parse Range header into R2 range format with validation
- */
-export function parseRangeHeader(rangeHeader: string | null): ParsedRange {
-	if (!rangeHeader) {
-		return { range: undefined };
+export function parseRangeHeader(header: string | null): ParsedRange {
+	if (!header) return { range: undefined };
+	const match = /^bytes=(\d*)-(\d*)$/.exec(header.trim());
+	if (!match || (!match[1] && !match[2]))
+		return {
+			range: undefined,
+			error: 'Use one byte range, such as bytes=0-1023',
+		};
+	const start = match[1] ? Number(match[1]) : undefined;
+	const end = match[2] ? Number(match[2]) : undefined;
+	if (
+		[start, end].some(
+			(value) =>
+				value !== undefined && (!Number.isSafeInteger(value) || value < 0),
+		)
+	) {
+		return {
+			range: undefined,
+			error: 'The byte range contains an invalid number',
+		};
 	}
-
-	const match = rangeHeader.match(/bytes=(\d*)-(\d*)/);
-	if (!match) {
-		return { range: undefined };
-	}
-
-	const start = match[1] ? parseInt(match[1], 10) : undefined;
-	const end = match[2] ? parseInt(match[2], 10) : undefined;
-
-	// Validate: offset must be non-negative
-	if (start !== undefined && start < 0) {
-		return { range: undefined, error: 'Invalid range: negative offset' };
-	}
-
 	if (start !== undefined && end !== undefined) {
 		const length = end - start + 1;
-
-		// Validate: end must be >= start
-		if (length <= 0) {
-			return { range: undefined, error: 'Invalid range: end before start' };
-		}
-
-		// Validate: range size limit
-		if (length > MAX_RANGE_SIZE_BYTES) {
+		if (length <= 0)
 			return {
 				range: undefined,
-				error: `Range too large: ${length} bytes exceeds ${MAX_RANGE_SIZE_BYTES} byte limit`,
+				error: 'The byte range ends before it starts',
 			};
-		}
-
+		if (length > MAX_RANGE_SIZE_BYTES)
+			return {
+				range: undefined,
+				error: 'Request a file part of 50 MB or less',
+			};
 		return { range: { offset: start, length } };
 	}
-
-	if (start !== undefined) {
-		// Open-ended range (start to end of file) - allowed
-		return { range: { offset: start } };
-	}
-
-	if (end !== undefined) {
-		// Suffix range (last N bytes)
-		if (end > MAX_SUFFIX_SIZE_BYTES) {
-			return {
-				range: undefined,
-				error: `Suffix range too large: ${end} bytes exceeds ${MAX_SUFFIX_SIZE_BYTES} byte limit`,
-			};
-		}
-		return { range: { suffix: end } };
-	}
-
-	return { range: undefined };
+	if (start !== undefined) return { range: { offset: start } };
+	if (!end || end > MAX_SUFFIX_SIZE_BYTES)
+		return {
+			range: undefined,
+			error: 'Request a file suffix between 1 byte and 10 MB',
+		};
+	return { range: { suffix: end } };
 }
 
-/**
- * Build Content-Range header value
- */
-export function buildContentRangeHeader(r2Range: R2Range | undefined, totalSize: number): string | null {
-	if (
-		!r2Range ||
-		!('offset' in r2Range) ||
-		typeof r2Range.offset !== 'number' ||
-		!('length' in r2Range) ||
-		typeof r2Range.length !== 'number'
-	) {
-		return null;
+/** Resolve suffix/open-ended ranges against metadata before fetching bytes. */
+export function resolveFileRange(
+	range: R2Range,
+	size: number,
+): { offset: number; length: number } | null {
+	if (size <= 0) return null;
+	if ('suffix' in range) {
+		const length = Math.min(range.suffix, size);
+		return { offset: size - length, length };
 	}
+	const offset = range.offset ?? 0;
+	if (offset >= size) return null;
+	const length = Math.min(range.length ?? size - offset, size - offset);
+	return { offset, length };
+}
 
-	return `bytes ${r2Range.offset}-${r2Range.offset + r2Range.length - 1}/${totalSize}`;
+export function buildContentRangeHeader(
+	range: R2Range | undefined,
+	totalSize: number,
+): string | null {
+	if (
+		!range ||
+		!('offset' in range) ||
+		typeof range.offset !== 'number' ||
+		!('length' in range) ||
+		typeof range.length !== 'number'
+	)
+		return null;
+	return `bytes ${range.offset}-${range.offset + range.length - 1}/${totalSize}`;
 }

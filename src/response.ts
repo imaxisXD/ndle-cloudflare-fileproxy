@@ -3,7 +3,7 @@
  */
 
 import { getCorsHeaders, addCorsHeaders } from './cors';
-import { CACHE_MAX_AGE_SECONDS } from './config';
+import { restoreCachedStatus } from './cache';
 import { buildContentRangeHeader } from './range';
 
 /**
@@ -21,6 +21,7 @@ export function createErrorResponse(message: string, status: number, requestId: 
 	console.log(`[FileProxy] [${requestId}] ❌ Error response: ${status} - ${message}`);
 	const headers = new Headers(getCorsHeaders(cors?.origin ?? null, cors?.authorizedOrigins));
 	headers.set('Content-Type', 'application/json');
+	headers.set('Cache-Control', 'private, no-store');
 	return new Response(JSON.stringify({ error: message }), { status, headers });
 }
 
@@ -56,18 +57,22 @@ export function buildR2Response(
 	// Support range requests
 	responseHeaders.set('Accept-Ranges', 'bytes');
 
-	// Cache immutable parquet files
-	responseHeaders.set('Cache-Control', `public, max-age=${CACHE_MAX_AGE_SECONDS}, immutable`);
+	// Private bytes are cached only inside the authorized Worker path.
+	responseHeaders.set('Cache-Control', 'private, no-store');
 
 	// Add CORS headers
 	addCorsHeaders(responseHeaders, cors.origin, cors.authorizedOrigins);
 
 	// Determine status code
 	let status = 200;
+	responseHeaders.set('Content-Length', String(object.size));
 	if (range && 'range' in object) {
 		status = 206;
 		const r2Range = (object as R2ObjectBody & { range?: R2Range }).range;
 		const contentRange = buildContentRangeHeader(r2Range, object.size);
+		if (r2Range && 'length' in r2Range && typeof r2Range.length === 'number') {
+			responseHeaders.set('Content-Length', String(r2Range.length));
+		}
 		if (contentRange) {
 			responseHeaders.set('Content-Range', contentRange);
 		}
@@ -100,8 +105,8 @@ export function buildHeadResponse(object: R2Object, cors: CorsContext): Response
 	// Support range requests
 	responseHeaders.set('Accept-Ranges', 'bytes');
 
-	// Cache immutable parquet files
-	responseHeaders.set('Cache-Control', `public, max-age=${CACHE_MAX_AGE_SECONDS}, immutable`);
+	// Private bytes are cached only inside the authorized Worker path.
+	responseHeaders.set('Cache-Control', 'private, no-store');
 
 	// Add CORS headers
 	addCorsHeaders(responseHeaders, cors.origin, cors.authorizedOrigins);
@@ -114,10 +119,12 @@ export function buildHeadResponse(object: R2Object, cors: CorsContext): Response
  */
 export function buildCachedResponse(cached: Response, cors: CorsContext): Response {
 	const cachedHeaders = new Headers(cached.headers);
+	const status = restoreCachedStatus(cachedHeaders);
+	cachedHeaders.set('Cache-Control', 'private, no-store');
 	addCorsHeaders(cachedHeaders, cors.origin, cors.authorizedOrigins);
 
 	return new Response(cached.body, {
-		status: cached.status,
+		status,
 		headers: cachedHeaders,
 	});
 }
