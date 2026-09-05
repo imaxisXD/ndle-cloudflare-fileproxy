@@ -82,7 +82,7 @@ export function buildR2Response(
 /**
  * Build response from R2 object metadata (HEAD request)
  */
-export function buildHeadResponse(object: R2Object, cors: CorsContext): { response: Response; status: number } {
+export function buildHeadResponse(object: R2Object, cors: CorsContext): Response {
 	const responseHeaders = new Headers();
 
 	// Copy HTTP metadata from R2 object
@@ -106,25 +106,15 @@ export function buildHeadResponse(object: R2Object, cors: CorsContext): { respon
 	// Add CORS headers
 	addCorsHeaders(responseHeaders, cors.origin, cors.authorizedOrigins);
 
-	return {
-		response: new Response(null, { status: 200, headers: responseHeaders }),
-		status: 200,
-	};
+	return new Response(null, { status: 200, headers: responseHeaders });
 }
 
 /**
  * Build cached response with CORS headers
  */
-export function buildCachedResponse(cached: Response, isHead: boolean, cors: CorsContext): Response {
+export function buildCachedResponse(cached: Response, cors: CorsContext): Response {
 	const cachedHeaders = new Headers(cached.headers);
 	addCorsHeaders(cachedHeaders, cors.origin, cors.authorizedOrigins);
-
-	if (isHead) {
-		return new Response(null, {
-			status: cached.status === 206 ? 200 : cached.status,
-			headers: cachedHeaders,
-		});
-	}
 
 	return new Response(cached.body, {
 		status: cached.status,

@@ -151,7 +151,7 @@ export default {
 			log.info(requestId, `📦 CACHE HIT | User: ${internalUserId} | Range: ${rangeHeader ?? 'FULL'}`);
 			logMetrics(requestId, metrics);
 
-			return buildCachedResponse(cached, isHead, cors);
+			return buildCachedResponse(cached, cors);
 		}
 
 		log.info(requestId, `📭 CACHE MISS | User: ${internalUserId} | Range: ${rangeHeader ?? 'FULL'}`);
@@ -174,7 +174,7 @@ export default {
 
 			log.info(requestId, `✅ R2 HEAD complete | Size: ${object.size} bytes | Time: ${metrics.r2FetchTimeMs.toFixed(2)}ms`);
 
-			const { response } = buildHeadResponse(object, cors);
+			const response = buildHeadResponse(object, cors);
 
 			metrics.totalTimeMs = performance.now() - requestStart;
 			log.info(requestId, `📤 HEAD response sent | Size: ${object.size}`);
