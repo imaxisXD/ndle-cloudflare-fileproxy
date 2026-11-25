@@ -17,12 +17,7 @@ import { validateUrl } from './url-validation';
 const FAVICON_SERVICE_URL = 'https://favicon.vemetric.com';
 
 /** Create error response with cache headers */
-function createFaviconErrorResponse(
-	message: string,
-	status: number,
-	cors: CorsContext,
-	cacheHeaders: Record<string, string>,
-): Response {
+function createFaviconErrorResponse(message: string, status: number, cors: CorsContext, cacheHeaders: Record<string, string>): Response {
 	const headers = new Headers(cacheHeaders);
 	addCorsHeaders(headers, cors.origin, cors.authorizedOrigins);
 	return Response.json(

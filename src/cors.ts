@@ -111,11 +111,7 @@ export function stripCorsHeaders(headers: Headers): void {
  * Echoes back the requested headers per Cloudflare best practices and adds
  * Access-Control-Request-Headers to Vary when reflecting them.
  */
-export function createPreflightResponse(
-	origin: string | null,
-	authorizedOrigins: string | undefined,
-	request?: Request,
-): Response {
+export function createPreflightResponse(origin: string | null, authorizedOrigins: string | undefined, request?: Request): Response {
 	if (!isOriginAllowed(origin, authorizedOrigins)) {
 		return new Response(null, { status: 403 });
 	}
@@ -123,9 +119,7 @@ export function createPreflightResponse(
 	const requestedHeaders = request?.headers.get('Access-Control-Request-Headers')?.trim();
 	if (requestedHeaders) {
 		headers['Access-Control-Allow-Headers'] = requestedHeaders;
-		headers['Vary'] = headers['Vary']
-			? `${headers['Vary']}, Access-Control-Request-Headers`
-			: 'Access-Control-Request-Headers';
+		headers['Vary'] = headers['Vary'] ? `${headers['Vary']}, Access-Control-Request-Headers` : 'Access-Control-Request-Headers';
 	}
 
 	return new Response(null, {

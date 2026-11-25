@@ -5,11 +5,7 @@
 /**
  * Environment type definition for bindings and secrets
  */
-export interface Env
-	extends Omit<
-		Cloudflare.Env,
-		'AUTHORIZED_ORIGINS' | 'FILE_ACCESS_ENDPOINT' | 'CONVEX_URL'
-	> {
+export interface Env extends Omit<Cloudflare.Env, 'AUTHORIZED_ORIGINS' | 'FILE_ACCESS_ENDPOINT' | 'CONVEX_URL'> {
 	// Clerk secrets (set via `wrangler secret put`)
 	CLERK_SECRET_KEY: string;
 	CLERK_PUBLISHABLE_KEY: string;

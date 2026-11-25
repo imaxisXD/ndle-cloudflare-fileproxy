@@ -8,7 +8,7 @@
 	"main": "src/index.ts",
 	"compatibility_date": "2025-12-25",
 	"observability": {
-		"enabled": true
+		"enabled": true,
 	},
 
 	/**
@@ -18,8 +18,8 @@
 	"r2_buckets": [
 		{
 			"binding": "ANALYTICS_BUCKET",
-		"bucket_name": "ndle-analytics-dev"
-		}
+			"bucket_name": "ndle-analytics-dev",
+		},
 	],
 
 	/**
@@ -29,7 +29,7 @@
 	"vars": {
 		"AUTHORIZED_ORIGINS": "http://localhost:3000",
 		"CONVEX_URL": "https://tame-sparrow-238.convex.cloud",
-		"FILE_ACCESS_ENDPOINT": "http://localhost:3001/internal/archive-access"
+		"FILE_ACCESS_ENDPOINT": "http://localhost:3001/internal/archive-access",
 	},
 
 	/**
@@ -47,14 +47,14 @@
 			"vars": {
 				"AUTHORIZED_ORIGINS": "http://localhost:3000,https://dev.ndle.app",
 				"CONVEX_URL": "https://tame-sparrow-238.convex.cloud",
-				"FILE_ACCESS_ENDPOINT": ""
+				"FILE_ACCESS_ENDPOINT": "",
 			},
 			"r2_buckets": [
 				{
 					"binding": "ANALYTICS_BUCKET",
-					"bucket_name": "ndle-analytics-dev"
-				}
-			]
+					"bucket_name": "ndle-analytics-dev",
+				},
+			],
 			// Secrets: Set with `npx wrangler secret put CLERK_SECRET_KEY --env dev`
 		},
 
@@ -68,15 +68,15 @@
 			"vars": {
 				"AUTHORIZED_ORIGINS": "https://ndle.app,https://www.ndle.app",
 				"CONVEX_URL": "https://cheery-starling-175.convex.cloud",
-				"FILE_ACCESS_ENDPOINT": "https://api.ndle.app/internal/archive-access"
+				"FILE_ACCESS_ENDPOINT": "https://api.ndle.app/internal/archive-access",
 			},
 			"r2_buckets": [
 				{
 					"binding": "ANALYTICS_BUCKET",
-					"bucket_name": "ndle-analytics"
-				}
-			]
+					"bucket_name": "ndle-analytics",
+				},
+			],
 			// Secrets: Set with `npx wrangler secret put CLERK_SECRET_KEY --env prod`
-		}
-	}
+		},
+	},
 }

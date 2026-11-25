@@ -1,11 +1,5 @@
 import { describe, expect, it } from 'vitest';
-import {
-	addCorsHeaders,
-	createPreflightResponse,
-	getCorsHeaders,
-	isOriginAllowed,
-	parseAuthorizedOrigins,
-} from './cors';
+import { addCorsHeaders, createPreflightResponse, getCorsHeaders, isOriginAllowed, parseAuthorizedOrigins } from './cors';
 
 const allowedOrigins = 'https://ndle.app,https://www.ndle.app';
 
@@ -66,10 +60,7 @@ describe('CORS origin checks', () => {
 	});
 
 	it('returns 403 for blocked preflight requests', () => {
-		const response = createPreflightResponse(
-			'https://bad.example',
-			allowedOrigins,
-		);
+		const response = createPreflightResponse('https://bad.example', allowedOrigins);
 
 		expect(response.status).toBe(403);
 	});
@@ -81,33 +72,19 @@ describe('CORS origin checks', () => {
 				'Access-Control-Request-Headers': 'Authorization, Range',
 			},
 		});
-		const response = createPreflightResponse(
-			'https://ndle.app',
-			allowedOrigins,
-			request,
-		);
+		const response = createPreflightResponse('https://ndle.app', allowedOrigins, request);
 
 		expect(response.status).toBe(204);
-		expect(response.headers.get('Access-Control-Allow-Origin')).toBe(
-			'https://ndle.app',
-		);
-		expect(response.headers.get('Access-Control-Allow-Headers')).toBe(
-			'Authorization, Range',
-		);
-		expect(response.headers.get('Vary')).toBe(
-			'Origin, Access-Control-Request-Headers',
-		);
+		expect(response.headers.get('Access-Control-Allow-Origin')).toBe('https://ndle.app');
+		expect(response.headers.get('Access-Control-Allow-Headers')).toBe('Authorization, Range');
+		expect(response.headers.get('Vary')).toBe('Origin, Access-Control-Request-Headers');
 	});
 
 	it('keeps Vary as Origin only when preflight has no Access-Control-Request-Headers', () => {
 		const request = new Request('https://proxy.test/file/test', {
 			method: 'OPTIONS',
 		});
-		const response = createPreflightResponse(
-			'https://ndle.app',
-			allowedOrigins,
-			request,
-		);
+		const response = createPreflightResponse('https://ndle.app', allowedOrigins, request);
 
 		expect(response.status).toBe(204);
 		expect(response.headers.get('Vary')).toBe('Origin');

@@ -2,7 +2,7 @@
  * Clerk authentication utilities
  */
 
-import { createClerkClient, type ClerkClient } from '@clerk/backend';
+import { verifyToken } from '@clerk/backend';
 import type { Env } from './types';
 import { parseAuthorizedOrigins } from './cors';
 import { log } from './logging';
@@ -22,35 +22,13 @@ export interface AuthError {
 
 export type AuthResponse = AuthResult | AuthError;
 
-const MAX_CLERK_CLIENTS = 16;
-const clerkClientCache = new Map<string, ClerkClient>();
-
-function getClerkClient(env: Env): ClerkClient {
-	const cacheKey = `${env.CLERK_SECRET_KEY}\0${env.CLERK_PUBLISHABLE_KEY}`;
-	const cached = clerkClientCache.get(cacheKey);
-	if (cached) return cached;
-	const client = createClerkClient({
-		secretKey: env.CLERK_SECRET_KEY,
-		publishableKey: env.CLERK_PUBLISHABLE_KEY,
-	});
-	if (clerkClientCache.size >= MAX_CLERK_CLIENTS) {
-		clerkClientCache.clear();
-	}
-	clerkClientCache.set(cacheKey, client);
-	return client;
-}
-
 function isObject(value: unknown): value is Record<string, unknown> {
 	return value !== null && typeof value === 'object' && !Array.isArray(value);
 }
 
 /** Called only after Clerk has verified this exact token and its authorized origin. */
-async function readAccountFromConvex(
-	env: Env,
-	authorization: string,
-): Promise<string> {
-	if (!env.CONVEX_URL)
-		throw new Error('Account verification is not configured');
+async function readAccountFromConvex(env: Env, authorization: string): Promise<string> {
+	if (!env.CONVEX_URL) throw new Error('Account verification is not configured');
 	const response = await fetch(new URL('/api/query', env.CONVEX_URL), {
 		method: 'POST',
 		headers: {
@@ -69,9 +47,7 @@ async function readAccountFromConvex(
 	if (response.status !== 200) {
 		await response.body?.cancel();
 		throw new Error(
-			response.status >= 300 && response.status < 400
-				? 'Account verification redirect rejected'
-				: 'Account verification is unavailable',
+			response.status >= 300 && response.status < 400 ? 'Account verification redirect rejected' : 'Account verification is unavailable',
 		);
 	}
 	const body: unknown = await response.json();
@@ -89,22 +65,19 @@ async function readAccountFromConvex(
 }
 
 /**
- * Authenticate request using Clerk JWT and extract internal user ID from session claims.
- * Uses networkless verification when CLERK_JWT_KEY is provided.
+ * Authenticate request using Clerk Convex-template JWT and extract internal user ID from claims.
+ * Uses networkless verification via `verifyToken` when `CLERK_JWT_KEY` is provided.
+ *
+ * `verifyToken` is used instead of `authenticateRequest` because Clerk's AISEC-21 hardening
+ * restricts `authenticateRequest` to session tokens only, whereas callers send a Clerk
+ * `convex` JWT template token (`cat: cl_B7d4PD222AAA`, `aud: 'convex'`).
  *
  * Security model:
- * - Clerk JWT proves the user is authenticated
+ * - Clerk JWT proves the user is authenticated and bound to `aud: 'convex'` + `authorizedParties`
  * - The internal account ID comes from verified claims or Convex's authenticated viewer query
  * - This prevents IDOR attacks since the ID cannot be spoofed via headers
- *
- * The JWT session claims must be configured in Clerk Dashboard:
- * Sessions -> Customize session token -> Add: { "convex_user_id": "{{user.public_metadata.convex_user_id}}" }
  */
-export async function authenticateRequest(
-	request: Request,
-	env: Env,
-	requestId: string,
-): Promise<AuthResponse> {
+export async function authenticateRequest(request: Request, env: Env, requestId: string): Promise<AuthResponse> {
 	const authStart = performance.now();
 
 	// Check for Authorization header
@@ -120,45 +93,30 @@ export async function authenticateRequest(
 		};
 	}
 
-	// Initialize or reuse memoized Clerk client
-	let clerk: ClerkClient;
-	try {
-		clerk = getClerkClient(env);
-	} catch (err) {
-		log.error('Failed to initialize Clerk client', {
+	const bearerToken = authHeader.slice('Bearer '.length).trim();
+	if (!bearerToken) {
+		log.warn('Missing or invalid Authorization header', {
 			request_id: requestId,
-			error: err,
 		});
 		return {
 			success: false,
-			error: 'Internal server error',
-			status: 500,
+			error: 'Unauthorized - Missing Bearer token',
+			status: 401,
 		};
 	}
 
 	const authorizedParties = parseAuthorizedOrigins(env.AUTHORIZED_ORIGINS);
 
-	// Verify the token
+	// Verify the Convex-template JWT directly
 	try {
-		const authResult = await clerk.authenticateRequest(request, {
+		const sessionClaims = await verifyToken(bearerToken, {
 			authorizedParties,
 			audience: 'convex',
-			jwtKey: env.CLERK_JWT_KEY, // Enables networkless verification when provided
+			jwtKey: env.CLERK_JWT_KEY,
+			secretKey: env.CLERK_SECRET_KEY,
 		});
 
-		if (!authResult.isSignedIn) {
-			log.warn('Authentication failed: Not signed in', {
-				request_id: requestId,
-			});
-			return {
-				success: false,
-				error: 'Unauthorized - Invalid token',
-				status: 401,
-			};
-		}
-
-		const auth = authResult.toAuth();
-		const clerkUserId = auth.userId;
+		const clerkUserId = typeof sessionClaims.sub === 'string' ? sessionClaims.sub : '';
 		if (!clerkUserId) {
 			log.warn('Authentication failed: No user ID in token', {
 				request_id: requestId,
@@ -170,11 +128,8 @@ export async function authenticateRequest(
 			};
 		}
 
-		// Extract internal user ID from JWT session claims
-		const sessionClaims = auth.sessionClaims as
-			| Record<string, unknown>
-			| undefined;
-		const claimedUserId = sessionClaims?.convex_user_id;
+		// Extract internal user ID from JWT claims
+		const claimedUserId = (sessionClaims as Record<string, unknown>).convex_user_id;
 		let internalUserId: string;
 
 		if (typeof claimedUserId === 'string' && claimedUserId.trim()) {
@@ -200,13 +155,13 @@ export async function authenticateRequest(
 		const durationMs = performance.now() - authStart;
 		return { success: true, clerkUserId, internalUserId, durationMs };
 	} catch (err: unknown) {
-		log.error('Token verification failed', {
+		log.warn('Authentication failed: Token verification failed', {
 			request_id: requestId,
 			error: err,
 		});
 		return {
 			success: false,
-			error: 'Unauthorized - Token verification failed',
+			error: 'Unauthorized - Invalid token',
 			status: 401,
 		};
 	}

@@ -7,10 +7,7 @@ function base64(bytes: Uint8Array): string {
 	return btoa(String.fromCharCode(...bytes));
 }
 function base64Url(bytes: Uint8Array): string {
-	return base64(bytes)
-		.replace(/\+/g, '-')
-		.replace(/\//g, '_')
-		.replace(/=+$/, '');
+	return base64(bytes).replace(/\+/g, '-').replace(/\//g, '_').replace(/=+$/, '');
 }
 
 async function createTestKeyPair() {
@@ -26,8 +23,7 @@ async function createTestKeyPair() {
 	);
 	if (!('publicKey' in keys)) throw new Error('Expected an RSA key pair');
 	const publicKey = await crypto.subtle.exportKey('spki', keys.publicKey);
-	if (!(publicKey instanceof ArrayBuffer))
-		throw new Error('Expected a binary public key');
+	if (!(publicKey instanceof ArrayBuffer)) throw new Error('Expected a binary public key');
 	const jwtKey = `-----BEGIN PUBLIC KEY-----\n${base64(new Uint8Array(publicKey))}\n-----END PUBLIC KEY-----`;
 	return { privateKey: keys.privateKey, jwtKey };
 }
@@ -35,18 +31,12 @@ async function createTestKeyPair() {
 async function signJwt(
 	privateKey: CryptoKey,
 	payload: Record<string, unknown>,
+	headerExtra: Record<string, unknown> = { cat: 'cl_B7d4PD222AAA' },
 ): Promise<{ token: string; unsigned: string; signature: string }> {
-	const encode = (value: unknown) =>
-		base64Url(new TextEncoder().encode(JSON.stringify(value)));
-	const unsigned = `${encode({ alg: 'RS256', typ: 'JWT', kid: 'local-test-key' })}.${encode(payload)}`;
+	const encode = (value: unknown) => base64Url(new TextEncoder().encode(JSON.stringify(value)));
+	const unsigned = `${encode({ alg: 'RS256', typ: 'JWT', kid: 'local-test-key', ...headerExtra })}.${encode(payload)}`;
 	const signature = base64Url(
-		new Uint8Array(
-			await crypto.subtle.sign(
-				'RSASSA-PKCS1-v1_5',
-				privateKey,
-				new TextEncoder().encode(unsigned),
-			),
-		),
+		new Uint8Array(await crypto.subtle.sign('RSASSA-PKCS1-v1_5', privateKey, new TextEncoder().encode(unsigned))),
 	);
 	return { token: `${unsigned}.${signature}`, unsigned, signature };
 }
@@ -81,24 +71,20 @@ it('verifies a real signed Convex-template JWT before querying the account, and 
 		FILE_ACCESS_ENDPOINT: 'https://access.test/internal/archive-access',
 		FILE_ACCESS_SECRET: 'local-only',
 	};
-	const accountQuery = vi
-		.spyOn(globalThis, 'fetch')
-		.mockImplementation(async (url) => {
-			expect(String(url)).toBe('https://convex.test/api/query');
-			return Response.json({
-				status: 'success',
-				value: { isSignedIn: true, userId: 'actual-account' },
-			});
+	const accountQuery = vi.spyOn(globalThis, 'fetch').mockImplementation(async (url) => {
+		expect(String(url)).toBe('https://convex.test/api/query');
+		return Response.json({
+			status: 'success',
+			value: { isSignedIn: true, userId: 'actual-account' },
 		});
+	});
 	const request = (value: string) =>
 		new Request('https://proxy.test/file/test', {
 			headers: { Authorization: `Bearer ${value}`, Origin: 'https://ndle.app' },
 		});
 
 	// Valid Convex-template JWT succeeds
-	expect(
-		await authenticateRequest(request(valid.token), config, 'real-jwt'),
-	).toMatchObject({
+	expect(await authenticateRequest(request(valid.token), config, 'real-jwt')).toMatchObject({
 		success: true,
 		clerkUserId: 'user_test',
 		internalUserId: 'actual-account',
@@ -108,14 +94,15 @@ it('verifies a real signed Convex-template JWT before querying the account, and 
 	// Forged signature is rejected without calling Convex
 	accountQuery.mockClear();
 	const forged = `${valid.unsigned}.${valid.signature[0] === 'A' ? 'B' : 'A'}${valid.signature.slice(1)}`;
-	expect(
-		await authenticateRequest(request(forged), config, 'forged-jwt'),
-	).toMatchObject({ success: false, status: 401 });
+	expect(await authenticateRequest(request(forged), config, 'forged-jwt')).toMatchObject({ success: false, status: 401 });
 	expect(accountQuery).not.toHaveBeenCalled();
 
 	// Properly signed JWT with wrong audience is rejected without calling Convex
-	expect(
-		await authenticateRequest(request(wrongAud.token), config, 'wrong-aud-jwt'),
-	).toMatchObject({ success: false, status: 401 });
+	expect(await authenticateRequest(request(wrongAud.token), config, 'wrong-aud-jwt')).toMatchObject({ success: false, status: 401 });
+	expect(accountQuery).not.toHaveBeenCalled();
+
+	// Properly signed JWT missing Clerk category header (OIDC id_token confusion, AISEC-21) is rejected
+	const missingCat = await signJwt(privateKey, { ...baseClaims, aud: 'convex' }, {});
+	expect(await authenticateRequest(request(missingCat.token), config, 'missing-cat-jwt')).toMatchObject({ success: false, status: 401 });
 	expect(accountQuery).not.toHaveBeenCalled();
 });

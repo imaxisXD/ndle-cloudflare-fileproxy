@@ -19,9 +19,7 @@ describe('IPv4 and IPv6 parsers', () => {
 		expect(parseIpv6('::ffff:127.0.0.1')).toBe(0xffff7f000001n);
 		expect(parseIpv6('[::ffff:7f00:1]')).toBe(0xffff7f000001n);
 		expect(parseIpv6('::ffff:0:127.0.0.1')).toBe(0xffff00007f000001n);
-		expect(parseIpv6('2606:4700:4700::1111')).toBe(
-			0x26064700470000000000000000001111n,
-		);
+		expect(parseIpv6('2606:4700:4700::1111')).toBe(0x26064700470000000000000000001111n);
 		expect(parseIpv6('::1::2')).toBeNull();
 		expect(parseIpv6('1:2:3:4:5:6:7:8:9')).toBeNull();
 		expect(parseIpv6('gggg::1')).toBeNull();

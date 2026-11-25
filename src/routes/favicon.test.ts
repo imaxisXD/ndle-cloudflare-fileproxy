@@ -1,7 +1,4 @@
-import {
-	createExecutionContext,
-	waitOnExecutionContext,
-} from 'cloudflare:test';
+import { createExecutionContext, waitOnExecutionContext } from 'cloudflare:test';
 import { afterEach, describe, expect, it, vi } from 'vitest';
 import { handleFaviconRequest } from './favicon';
 
@@ -12,9 +9,7 @@ afterEach(() => vi.restoreAllMocks());
 describe('favicon route caching and CORS safety', () => {
 	it('strips Vary and Access-Control-* before caching and reapplies current-origin CORS on hits', async () => {
 		const domain = `${crypto.randomUUID()}.example.com`;
-		const fetchSpy = vi
-			.spyOn(globalThis, 'fetch')
-			.mockResolvedValue(new Response(null, { status: 200 }));
+		const fetchSpy = vi.spyOn(globalThis, 'fetch').mockResolvedValue(new Response(null, { status: 200 }));
 
 		const ctx1 = createExecutionContext();
 		const first = await handleFaviconRequest(
@@ -26,9 +21,7 @@ describe('favicon route caching and CORS safety', () => {
 		await waitOnExecutionContext(ctx1);
 
 		expect(first.status).toBe(200);
-		expect(first.headers.get('Access-Control-Allow-Origin')).toBe(
-			'https://ndle.app',
-		);
+		expect(first.headers.get('Access-Control-Allow-Origin')).toBe('https://ndle.app');
 		expect(await first.json()).toEqual({
 			faviconUrl: `https://favicon.vemetric.com/${domain}?size=32`,
 			domain,
@@ -36,16 +29,10 @@ describe('favicon route caching and CORS safety', () => {
 		expect(fetchSpy).toHaveBeenCalledTimes(1);
 
 		// Verify the stored cache entry has no Vary or Access-Control-* headers
-		const stored = await caches.default.match(
-			new Request(`https://cache.internal/favicon/${encodeURIComponent(domain)}`),
-		);
+		const stored = await caches.default.match(new Request(`https://cache.internal/favicon/${encodeURIComponent(domain)}`));
 		expect(stored).toBeDefined();
 		expect(stored?.headers.has('Vary')).toBe(false);
-		expect(
-			[...(stored?.headers.keys() ?? [])].some((k) =>
-				k.toLowerCase().startsWith('access-control-'),
-			),
-		).toBe(false);
+		expect([...(stored?.headers.keys() ?? [])].some((k) => k.toLowerCase().startsWith('access-control-'))).toBe(false);
 
 		// Second request from a different allowed origin hits cache with its own CORS origin
 		const ctx2 = createExecutionContext();
@@ -58,9 +45,7 @@ describe('favicon route caching and CORS safety', () => {
 		await waitOnExecutionContext(ctx2);
 
 		expect(second.status).toBe(200);
-		expect(second.headers.get('Access-Control-Allow-Origin')).toBe(
-			'https://www.ndle.app',
-		);
+		expect(second.headers.get('Access-Control-Allow-Origin')).toBe('https://www.ndle.app');
 		expect(fetchSpy).toHaveBeenCalledTimes(1);
 
 		// Third request from an unauthorized origin gets no Access-Control-Allow-Origin
@@ -80,12 +65,8 @@ describe('favicon route caching and CORS safety', () => {
 
 	it('handles cache.put failures inside ctx.waitUntil without failing the response', async () => {
 		const domain = `${crypto.randomUUID()}.example.com`;
-		vi.spyOn(globalThis, 'fetch').mockResolvedValue(
-			new Response(null, { status: 200 }),
-		);
-		vi.spyOn(caches.default, 'put').mockRejectedValue(
-			new Error('Cache quota exceeded'),
-		);
+		vi.spyOn(globalThis, 'fetch').mockResolvedValue(new Response(null, { status: 200 }));
+		vi.spyOn(caches.default, 'put').mockRejectedValue(new Error('Cache quota exceeded'));
 
 		const ctx = createExecutionContext();
 		const response = await handleFaviconRequest(
@@ -107,16 +88,9 @@ describe('favicon route caching and CORS safety', () => {
 		const fetchSpy = vi.spyOn(globalThis, 'fetch');
 		const ctx = createExecutionContext();
 
-		for (const target of [
-			'http://[::1]',
-			'http://[::ffff:127.0.0.1]',
-			'http://169.254.169.254',
-			'http://sub.localhost',
-		]) {
+		for (const target of ['http://[::1]', 'http://[::ffff:127.0.0.1]', 'http://169.254.169.254', 'http://sub.localhost']) {
 			const response = await handleFaviconRequest(
-				new Request(
-					`https://proxy.test/favicon?url=${encodeURIComponent(target)}`,
-				),
+				new Request(`https://proxy.test/favicon?url=${encodeURIComponent(target)}`),
 				ctx,
 				{ origin: 'https://ndle.app', authorizedOrigins },
 				'req-ssrf',

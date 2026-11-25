@@ -18,20 +18,13 @@ export interface CorsContext {
 /**
  * Create error response with CORS headers
  */
-export function createErrorResponse(
-	message: string,
-	status: number,
-	requestId: string,
-	cors?: CorsContext,
-): Response {
+export function createErrorResponse(message: string, status: number, requestId: string, cors?: CorsContext): Response {
 	if (status >= 500) {
 		log.error('Error response', { request_id: requestId, status, error: message });
 	} else {
 		log.warn('Error response', { request_id: requestId, status, error: message });
 	}
-	const headers = new Headers(
-		getCorsHeaders(cors?.origin ?? null, cors?.authorizedOrigins),
-	);
+	const headers = new Headers(getCorsHeaders(cors?.origin ?? null, cors?.authorizedOrigins));
 	headers.set('Content-Type', 'application/json');
 	headers.set('Cache-Control', 'private, no-store');
 	return new Response(JSON.stringify({ error: message }), { status, headers });
@@ -83,11 +76,7 @@ function buildR2BaseHeaders(object: R2Object, cors: CorsContext): Headers {
 /**
  * Build response from R2 object body (GET request)
  */
-export function buildR2Response(
-	object: R2ObjectBody,
-	range: R2Range | undefined,
-	cors: CorsContext,
-): Response {
+export function buildR2Response(object: R2ObjectBody, range: R2Range | undefined, cors: CorsContext): Response {
 	const headers = buildR2BaseHeaders(object, cors);
 
 	let status = 200;
@@ -144,10 +133,7 @@ export function cloneCachedResponse(
 /**
  * Build cached archive response with CORS headers
  */
-export function buildCachedResponse(
-	cached: Response,
-	cors: CorsContext,
-): Response {
+export function buildCachedResponse(cached: Response, cors: CorsContext): Response {
 	return cloneCachedResponse(cached, cors, {
 		cacheControl: 'private, no-store',
 		transformHeaders: restoreCachedStatus,

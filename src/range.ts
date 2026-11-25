@@ -11,12 +11,7 @@ export function parseRangeHeader(header: string | null): ParsedRange {
 		};
 	const start = match[1] ? Number(match[1]) : undefined;
 	const end = match[2] ? Number(match[2]) : undefined;
-	if (
-		[start, end].some(
-			(value) =>
-				value !== undefined && (!Number.isSafeInteger(value) || value < 0),
-		)
-	) {
+	if ([start, end].some((value) => value !== undefined && (!Number.isSafeInteger(value) || value < 0))) {
 		return {
 			range: undefined,
 			error: 'The byte range contains an invalid number',
@@ -46,39 +41,23 @@ export function parseRangeHeader(header: string | null): ParsedRange {
 }
 
 /** Resolve suffix/open-ended ranges against metadata before fetching bytes. */
-export function resolveFileRange(
-	range: R2Range,
-	size: number,
-): { offset: number; length: number } | null {
+export function resolveFileRange(range: R2Range, size: number): { offset: number; length: number } | null {
 	if (size <= 0) return null;
 	if ('suffix' in range && typeof range.suffix === 'number') {
 		if (!Number.isSafeInteger(range.suffix) || range.suffix <= 0) return null;
 		const length = Math.min(range.suffix, size);
 		return { offset: size - length, length };
 	}
-	const offset =
-		'offset' in range && typeof range.offset === 'number' ? range.offset : 0;
+	const offset = 'offset' in range && typeof range.offset === 'number' ? range.offset : 0;
 	if (offset < 0 || offset >= size) return null;
-	const requestedLength =
-		'length' in range && typeof range.length === 'number'
-			? range.length
-			: size - offset;
+	const requestedLength = 'length' in range && typeof range.length === 'number' ? range.length : size - offset;
 	const length = Math.min(requestedLength, size - offset);
 	if (length <= 0) return null;
 	return { offset, length };
 }
 
-export function buildContentRangeHeader(
-	range: R2Range | undefined,
-	totalSize: number,
-): string | null {
-	if (
-		!range ||
-		!('offset' in range) ||
-		typeof range.offset !== 'number' ||
-		!('length' in range) ||
-		typeof range.length !== 'number'
-	)
+export function buildContentRangeHeader(range: R2Range | undefined, totalSize: number): string | null {
+	if (!range || !('offset' in range) || typeof range.offset !== 'number' || !('length' in range) || typeof range.length !== 'number')
 		return null;
 	return `bytes ${range.offset}-${range.offset + range.length - 1}/${totalSize}`;
 }

@@ -1,7 +1,4 @@
-import {
-	createExecutionContext,
-	waitOnExecutionContext,
-} from 'cloudflare:test';
+import { createExecutionContext, waitOnExecutionContext } from 'cloudflare:test';
 import { env } from 'cloudflare:workers';
 import { afterEach, beforeEach, describe, expect, it, vi } from 'vitest';
 import { buildCacheKey } from './cache';
@@ -36,9 +33,7 @@ beforeEach(async () => {
 	account.signedIn = true;
 	key = `archive/user_id=user%3Aaccount123/year=2026/${crypto.randomUUID()}.parquet`;
 	await env.ANALYTICS_BUCKET.put(key, 'abcdefgh');
-	vi.spyOn(globalThis, 'fetch').mockImplementation(async () =>
-		Response.json({ allowed: true }),
-	);
+	vi.spyOn(globalThis, 'fetch').mockImplementation(async () => Response.json({ allowed: true }));
 });
 afterEach(() => vi.restoreAllMocks());
 
@@ -55,17 +50,14 @@ async function read(
 	const ctx = createExecutionContext();
 	const prefix = options.prefix ?? '/file/';
 	const response = await worker.fetch(
-		new Request(
-			`https://proxy.test${prefix}${encodeURIComponent(options.fileKey ?? key)}`,
-			{
-				method: options.method ?? 'GET',
-				headers: {
-					Authorization: 'Bearer test',
-					Origin: options.origin ?? 'https://ndle.app',
-					...(range ? { Range: range } : {}),
-				},
+		new Request(`https://proxy.test${prefix}${encodeURIComponent(options.fileKey ?? key)}`, {
+			method: options.method ?? 'GET',
+			headers: {
+				Authorization: 'Bearer test',
+				Origin: options.origin ?? 'https://ndle.app',
+				...(range ? { Range: range } : {}),
 			},
-		),
+		}),
 		options.settings ?? config,
 		ctx,
 	);
@@ -76,16 +68,10 @@ async function read(
 
 describe('archive access and actual Workers cache', () => {
 	it('builds canonical unroutable internal cache keys', () => {
-		const cacheKey = buildCacheKey(
-			'archive/user_id=user%3A123/file.parquet',
-			'account123',
-			'{"offset":0,"length":4}',
-		);
+		const cacheKey = buildCacheKey('archive/user_id=user%3A123/file.parquet', 'account123', '{"offset":0,"length":4}');
 		const url = new URL(cacheKey.url);
 		expect(url.origin).toBe('https://archive-cache.internal');
-		expect(url.pathname).toBe(
-			`/v2/${encodeURIComponent('archive/user_id=user%3A123/file.parquet')}`,
-		);
+		expect(url.pathname).toBe(`/v2/${encodeURIComponent('archive/user_id=user%3A123/file.parquet')}`);
 		expect(url.searchParams.get('uid')).toBe('account123');
 		expect(url.searchParams.get('range')).toBe('{"offset":0,"length":4}');
 	});
@@ -106,26 +92,18 @@ describe('archive access and actual Workers cache', () => {
 			expect(cached.response.status).toBe(206);
 			expect(cached.response.headers.get('Content-Range')).toBe(contentRange);
 			expect(cached.response.headers.get('Content-Length')).toBe('4');
-			expect(cached.response.headers.get('Cache-Control')).toBe(
-				'private, no-store',
-			);
-			expect(cached.response.headers.has('X-Archive-Response-Status')).toBe(
-				false,
-			);
+			expect(cached.response.headers.get('Cache-Control')).toBe('private, no-store');
+			expect(cached.response.headers.has('X-Archive-Response-Status')).toBe(false);
 		}
 	});
 
 	it('checks the archive grant again before serving cached bytes', async () => {
 		await read('bytes=0-3');
-		vi.mocked(fetch).mockImplementation(async () =>
-			Response.json({ allowed: false }),
-		);
+		vi.mocked(fetch).mockImplementation(async () => Response.json({ allowed: false }));
 		const denied = await read('bytes=0-3');
 		expect(denied.response.status).toBe(403);
 		expect(denied.body).not.toBe('abcd');
-		expect(denied.response.headers.get('Cache-Control')).toBe(
-			'private, no-store',
-		);
+		expect(denied.response.headers.get('Cache-Control')).toBe('private, no-store');
 	});
 
 	it('allows an indexed guest archive after ownership is verified by the alias service', async () => {
@@ -165,25 +143,17 @@ describe('archive access and actual Workers cache', () => {
 		expect(grantUrl.searchParams.get('key')).toBe(exportKey);
 		expect(grantUrl.searchParams.get('user_id')).toBe('account123');
 		await env.ANALYTICS_BUCKET.delete(exportKey);
-		expect((await read('bytes=0-5', { fileKey: exportKey })).body).toBe(
-			'export',
-		);
-		vi.mocked(fetch).mockImplementation(async () =>
-			Response.json({ allowed: false }),
-		);
+		expect((await read('bytes=0-5', { fileKey: exportKey })).body).toBe('export');
+		vi.mocked(fetch).mockImplementation(async () => Response.json({ allowed: false }));
 		const expired = await read('bytes=0-5', { fileKey: exportKey });
 		expect(expired.response.status).toBe(403);
 		expect(expired.body).not.toBe('export');
-		expect(expired.response.headers.get('Cache-Control')).toBe(
-			'private, no-store',
-		);
+		expect(expired.response.headers.get('Cache-Control')).toBe('private, no-store');
 	});
 
 	it('does not bypass unavailable authorization for a locally matching owner', async () => {
 		await read();
-		vi.mocked(fetch).mockImplementation(
-			async () => new Response(null, { status: 503 }),
-		);
+		vi.mocked(fetch).mockImplementation(async () => new Response(null, { status: 503 }));
 		expect((await read()).response.status).toBe(503);
 		expect(
 			(
@@ -207,8 +177,7 @@ describe('archive access and actual Workers cache', () => {
 				headCalls += 1;
 				return env.ANALYTICS_BUCKET.head(fileKey);
 			},
-			get: (fileKey: string, options?: R2GetOptions) =>
-				env.ANALYTICS_BUCKET.get(fileKey, options),
+			get: (fileKey: string, options?: R2GetOptions) => env.ANALYTICS_BUCKET.get(fileKey, options),
 		} as unknown as R2Bucket;
 		const settings: Env = { ...config, ANALYTICS_BUCKET: wrappedBucket };
 
@@ -264,12 +233,7 @@ describe('archive access and actual Workers cache', () => {
 			expect(outside.response.headers.get('Content-Range')).toBe('bytes */0');
 		}
 
-		for (const invalid of [
-			'bytes=0-1,4-5',
-			'wrong=0-1',
-			'bytes=-0',
-			'bytes=9007199254740992-',
-		]) {
+		for (const invalid of ['bytes=0-1,4-5', 'wrong=0-1', 'bytes=-0', 'bytes=9007199254740992-']) {
 			expect((await read(invalid)).response.status).toBe(400);
 		}
 	});
@@ -278,17 +242,13 @@ describe('archive access and actual Workers cache', () => {
 		const result = await read(undefined, { method: 'HEAD' });
 		expect(result.body).toBe('');
 		expect(result.response.headers.get('Content-Length')).toBe('8');
-		expect(result.response.headers.get('Cache-Control')).toBe(
-			'private, no-store',
-		);
+		expect(result.response.headers.get('Cache-Control')).toBe('private, no-store');
 	});
 
 	it('does not reuse the previous request origin on cache hits', async () => {
 		await read('bytes=0-3');
 		const result = await read('bytes=0-3', { origin: 'https://other.test' });
-		expect(result.response.headers.has('Access-Control-Allow-Origin')).toBe(
-			false,
-		);
+		expect(result.response.headers.has('Access-Control-Allow-Origin')).toBe(false);
 	});
 
 	it('refuses raw recovery data paths before checking file grants', async () => {

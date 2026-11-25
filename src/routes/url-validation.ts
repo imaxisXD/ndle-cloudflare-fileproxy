@@ -134,11 +134,11 @@ const BLOCKED_IPV6_CIDRS: readonly Ipv6Cidr[] = [
 ].map(createIpv6Cidr);
 
 function isBlockedIpv4(ip: number): boolean {
-	return BLOCKED_IPV4_CIDRS.some(({ network, mask }) => ((ip & mask) >>> 0) === network);
+	return BLOCKED_IPV4_CIDRS.some(({ network, mask }) => (ip & mask) >>> 0 === network);
 }
 
 function isBlockedIpv6(ip: bigint): boolean {
-	return BLOCKED_IPV6_CIDRS.some(({ prefix, shift }) => (ip >> shift) === prefix);
+	return BLOCKED_IPV6_CIDRS.some(({ prefix, shift }) => ip >> shift === prefix);
 }
 
 function isLocalhostDomain(normalizedHost: string): boolean {

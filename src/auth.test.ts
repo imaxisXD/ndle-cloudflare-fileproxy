@@ -4,30 +4,23 @@ import { authenticateRequest } from './auth';
 import type { Env } from './types';
 
 const mockState = vi.hoisted(() => ({
-	signedIn: true,
+	shouldReject: false,
 	userId: 'user_test',
 	claims: {} as Record<string, unknown>,
-	createClientCalls: 0,
+	lastToken: undefined as string | undefined,
 	lastAuthOptions: undefined as Record<string, unknown> | undefined,
 }));
 
 vi.mock('@clerk/backend', () => ({
-	createClerkClient: () => {
-		mockState.createClientCalls += 1;
+	verifyToken: async (token: string, options?: Record<string, unknown>) => {
+		mockState.lastToken = token;
+		mockState.lastAuthOptions = options;
+		if (mockState.shouldReject) {
+			throw new Error('Invalid token');
+		}
 		return {
-			authenticateRequest: async (
-				_request: Request,
-				options?: Record<string, unknown>,
-			) => {
-				mockState.lastAuthOptions = options;
-				return {
-					isSignedIn: mockState.signedIn,
-					toAuth: () => ({
-						userId: mockState.userId,
-						sessionClaims: mockState.claims,
-					}),
-				};
-			},
+			sub: mockState.userId,
+			...mockState.claims,
 		};
 	},
 }));
@@ -51,9 +44,10 @@ const request = () =>
 	});
 
 beforeEach(() => {
-	mockState.signedIn = true;
+	mockState.shouldReject = false;
 	mockState.userId = 'user_test';
 	mockState.claims = {};
+	mockState.lastToken = undefined;
 	mockState.lastAuthOptions = undefined;
 	vi.spyOn(globalThis, 'fetch').mockResolvedValue(
 		Response.json({
@@ -71,6 +65,7 @@ describe('verified account lookup for fresh sessions', () => {
 			clerkUserId: 'user_test',
 			internalUserId: 'actual-account',
 		});
+		expect(mockState.lastToken).toBe('verified-convex-token');
 		expect(mockState.lastAuthOptions).toMatchObject({
 			audience: 'convex',
 			authorizedParties: ['https://ndle.app'],
@@ -90,34 +85,19 @@ describe('verified account lookup for fresh sessions', () => {
 		expect(options?.redirect).toBe('manual');
 	});
 
-	it('filters empty entries from AUTHORIZED_ORIGINS and memoizes the Clerk client per key pair', async () => {
-		const initialCalls = mockState.createClientCalls;
+	it('filters empty entries from AUTHORIZED_ORIGINS and passes them to verifyToken', async () => {
 		const uniqueConfig: Env = {
 			...config,
-			CLERK_SECRET_KEY: 'memo-secret-1',
-			CLERK_PUBLISHABLE_KEY: 'memo-pub-1',
 			AUTHORIZED_ORIGINS: ' https://ndle.app , , https://www.ndle.app , ',
 		};
 		mockState.claims = { convex_user_id: 'metadata-account' };
 
-		await authenticateRequest(request(), uniqueConfig, 'memo-1');
-		await authenticateRequest(request(), uniqueConfig, 'memo-2');
-		expect(mockState.createClientCalls).toBe(initialCalls + 1);
-		expect(mockState.lastAuthOptions?.authorizedParties).toEqual([
-			'https://ndle.app',
-			'https://www.ndle.app',
-		]);
-
-		await authenticateRequest(
-			request(),
-			{ ...uniqueConfig, CLERK_SECRET_KEY: 'memo-secret-2' },
-			'memo-3',
-		);
-		expect(mockState.createClientCalls).toBe(initialCalls + 2);
+		await authenticateRequest(request(), uniqueConfig, 'origins-1');
+		expect(mockState.lastAuthOptions?.authorizedParties).toEqual(['https://ndle.app', 'https://www.ndle.app']);
 	});
 
 	it('does not contact Convex before Clerk verifies the token', async () => {
-		mockState.signedIn = false;
+		mockState.shouldReject = true;
 		expect(await authenticateRequest(request(), config, 'test')).toMatchObject({
 			success: false,
 			status: 401,
@@ -153,15 +133,12 @@ describe('verified account lookup for fresh sessions', () => {
 		for (const status of [302, 502]) {
 			const response = new Response('redirect or error body', {
 				status,
-				headers:
-					status === 302 ? { Location: 'https://evil.example/steal' } : {},
+				headers: status === 302 ? { Location: 'https://evil.example/steal' } : {},
 			});
 			const cancelSpy = vi.spyOn(response.body!, 'cancel');
 			vi.mocked(fetch).mockResolvedValueOnce(response);
 
-			expect(
-				await authenticateRequest(request(), config, `status-${status}`),
-			).toMatchObject({
+			expect(await authenticateRequest(request(), config, `status-${status}`)).toMatchObject({
 				success: false,
 				status: 503,
 			});
@@ -176,13 +153,10 @@ describe('verified account lookup for fresh sessions', () => {
 			status: 503,
 		});
 		vi.mocked(fetch).mockClear();
-		expect(
-			await authenticateRequest(
-				request(),
-				{ ...config, CONVEX_URL: '' },
-				'test',
-			),
-		).toMatchObject({ success: false, status: 503 });
+		expect(await authenticateRequest(request(), { ...config, CONVEX_URL: '' }, 'test')).toMatchObject({
+			success: false,
+			status: 503,
+		});
 		expect(fetch).not.toHaveBeenCalled();
 	});
 });
