@@ -13,9 +13,7 @@ function base64Url(bytes: Uint8Array): string {
 		.replace(/=+$/, '');
 }
 
-afterEach(() => vi.restoreAllMocks());
-
-it('verifies a real signed Convex-template JWT before querying the account, and rejects a forged signature', async () => {
+async function createTestKeyPair() {
 	const keys = await crypto.subtle.generateKey(
 		{
 			name: 'RSASSA-PKCS1-v1_5',
@@ -30,37 +28,56 @@ it('verifies a real signed Convex-template JWT before querying the account, and 
 	const publicKey = await crypto.subtle.exportKey('spki', keys.publicKey);
 	if (!(publicKey instanceof ArrayBuffer))
 		throw new Error('Expected a binary public key');
-	const now = Math.floor(Date.now() / 1000);
+	const jwtKey = `-----BEGIN PUBLIC KEY-----\n${base64(new Uint8Array(publicKey))}\n-----END PUBLIC KEY-----`;
+	return { privateKey: keys.privateKey, jwtKey };
+}
+
+async function signJwt(
+	privateKey: CryptoKey,
+	payload: Record<string, unknown>,
+): Promise<{ token: string; unsigned: string; signature: string }> {
 	const encode = (value: unknown) =>
 		base64Url(new TextEncoder().encode(JSON.stringify(value)));
-	const unsigned = `${encode({ alg: 'RS256', typ: 'JWT', kid: 'local-test-key' })}.${encode(
-		{
-			sub: 'user_test',
-			aud: 'convex',
-			iss: 'https://clerk.example.test',
-			azp: 'https://ndle.app',
-			iat: now - 1,
-			nbf: now - 1,
-			exp: now + 60,
-		},
-	)}`;
+	const unsigned = `${encode({ alg: 'RS256', typ: 'JWT', kid: 'local-test-key' })}.${encode(payload)}`;
 	const signature = base64Url(
 		new Uint8Array(
 			await crypto.subtle.sign(
 				'RSASSA-PKCS1-v1_5',
-				keys.privateKey,
+				privateKey,
 				new TextEncoder().encode(unsigned),
 			),
 		),
 	);
-	const token = `${unsigned}.${signature}`;
+	return { token: `${unsigned}.${signature}`, unsigned, signature };
+}
+
+afterEach(() => vi.restoreAllMocks());
+
+it('verifies a real signed Convex-template JWT before querying the account, and rejects forged signatures and wrong audiences', async () => {
+	const { privateKey, jwtKey } = await createTestKeyPair();
+	const now = Math.floor(Date.now() / 1000);
+	const baseClaims = {
+		sub: 'user_test',
+		iss: 'https://clerk.example.test',
+		azp: 'https://ndle.app',
+		iat: now - 1,
+		nbf: now - 1,
+		exp: now + 60,
+	};
+
+	const valid = await signJwt(privateKey, { ...baseClaims, aud: 'convex' });
+	const wrongAud = await signJwt(privateKey, {
+		...baseClaims,
+		aud: 'other-service',
+	});
+
 	const config: Env = {
 		...env,
 		AUTHORIZED_ORIGINS: 'https://ndle.app',
 		CONVEX_URL: 'https://convex.test',
 		CLERK_SECRET_KEY: 'sk_test_local_only',
 		CLERK_PUBLISHABLE_KEY: `pk_test_${btoa('clerk.example.test$')}`,
-		CLERK_JWT_KEY: `-----BEGIN PUBLIC KEY-----\n${base64(new Uint8Array(publicKey))}\n-----END PUBLIC KEY-----`,
+		CLERK_JWT_KEY: jwtKey,
 		FILE_ACCESS_ENDPOINT: 'https://access.test/internal/archive-access',
 		FILE_ACCESS_SECRET: 'local-only',
 	};
@@ -77,18 +94,28 @@ it('verifies a real signed Convex-template JWT before querying the account, and 
 		new Request('https://proxy.test/file/test', {
 			headers: { Authorization: `Bearer ${value}`, Origin: 'https://ndle.app' },
 		});
+
+	// Valid Convex-template JWT succeeds
 	expect(
-		await authenticateRequest(request(token), config, 'real-jwt'),
+		await authenticateRequest(request(valid.token), config, 'real-jwt'),
 	).toMatchObject({
 		success: true,
 		clerkUserId: 'user_test',
 		internalUserId: 'actual-account',
 	});
 	expect(accountQuery).toHaveBeenCalledTimes(1);
+
+	// Forged signature is rejected without calling Convex
 	accountQuery.mockClear();
-	const forged = `${unsigned}.${signature[0] === 'A' ? 'B' : 'A'}${signature.slice(1)}`;
+	const forged = `${valid.unsigned}.${valid.signature[0] === 'A' ? 'B' : 'A'}${valid.signature.slice(1)}`;
 	expect(
 		await authenticateRequest(request(forged), config, 'forged-jwt'),
+	).toMatchObject({ success: false, status: 401 });
+	expect(accountQuery).not.toHaveBeenCalled();
+
+	// Properly signed JWT with wrong audience is rejected without calling Convex
+	expect(
+		await authenticateRequest(request(wrongAud.token), config, 'wrong-aud-jwt'),
 	).toMatchObject({ success: false, status: 401 });
 	expect(accountQuery).not.toHaveBeenCalled();
 });

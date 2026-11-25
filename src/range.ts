@@ -51,13 +51,20 @@ export function resolveFileRange(
 	size: number,
 ): { offset: number; length: number } | null {
 	if (size <= 0) return null;
-	if ('suffix' in range) {
+	if ('suffix' in range && typeof range.suffix === 'number') {
+		if (!Number.isSafeInteger(range.suffix) || range.suffix <= 0) return null;
 		const length = Math.min(range.suffix, size);
 		return { offset: size - length, length };
 	}
-	const offset = range.offset ?? 0;
-	if (offset >= size) return null;
-	const length = Math.min(range.length ?? size - offset, size - offset);
+	const offset =
+		'offset' in range && typeof range.offset === 'number' ? range.offset : 0;
+	if (offset < 0 || offset >= size) return null;
+	const requestedLength =
+		'length' in range && typeof range.length === 'number'
+			? range.length
+			: size - offset;
+	const length = Math.min(requestedLength, size - offset);
+	if (length <= 0) return null;
 	return { offset, length };
 }
 

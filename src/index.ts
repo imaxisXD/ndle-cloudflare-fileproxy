@@ -14,8 +14,31 @@ import { hasArchiveAccess } from './archive-access';
 import { parseRangeHeader, resolveFileRange } from './range';
 import { buildCacheKey, cacheResponse } from './cache';
 import { MAX_RANGE_SIZE_BYTES } from './config';
-import { handleFlagRequest } from './routes/flag';
+import { log } from './logging';
 import { handleFaviconRequest } from './routes/favicon';
+
+function isOpenEndedRange(range: R2Range): boolean {
+	return (
+		'offset' in range &&
+		typeof range.offset === 'number' &&
+		(!('length' in range) || typeof range.length !== 'number')
+	);
+}
+
+function createRangeNotSatisfiableResponse(
+	size: number,
+	requestId: string,
+	cors: CorsContext,
+): Response {
+	const response = createErrorResponse(
+		'The requested file part is outside this file',
+		416,
+		requestId,
+		cors,
+	);
+	response.headers.set('Content-Range', `bytes */${size}`);
+	return response;
+}
 
 export default {
 	async fetch(
@@ -36,16 +59,13 @@ export default {
 			: url.pathname;
 		if (request.method === 'OPTIONS')
 			return createPreflightResponse(origin, env.AUTHORIZED_ORIGINS, request);
-		if (pathname === '/health') return createHealthResponse(cors);
-		const publicCors = { origin, authorizedOrigins: env.AUTHORIZED_ORIGINS };
-		if (pathname === '/flag')
-			return handleFlagRequest(request, ctx, publicCors);
-		if (pathname === '/favicon')
-			return handleFaviconRequest(request, ctx, publicCors);
-		if (!pathname.startsWith('/file/'))
-			return createErrorResponse('Not found', 404, requestId, cors);
 		if (request.method !== 'GET' && request.method !== 'HEAD')
 			return createErrorResponse('Method not allowed', 405, requestId, cors);
+		if (pathname === '/health') return createHealthResponse(cors);
+		if (pathname === '/favicon')
+			return handleFaviconRequest(request, ctx, cors, requestId);
+		if (!pathname.startsWith('/file/'))
+			return createErrorResponse('Not found', 404, requestId, cors);
 
 		let fileKey: string;
 		try {
@@ -90,37 +110,33 @@ export default {
 			if (parsed.error)
 				return createErrorResponse(parsed.error, 400, requestId, cors);
 			const cacheKey = buildCacheKey(
-				request.url,
+				fileKey,
 				auth.internalUserId,
 				parsed.range ? JSON.stringify(parsed.range) : undefined,
 			);
 			const cached = await caches.default.match(cacheKey);
 			if (cached) {
-				console.info(
-					JSON.stringify({
-						message: 'Archive read completed',
-						request_id: requestId,
-						cache_hit: true,
-						latency_ms: performance.now() - start,
-					}),
-				);
+				log.info('Archive read completed', {
+					request_id: requestId,
+					cache_hit: true,
+					latency_ms: performance.now() - start,
+				});
 				return buildCachedResponse(cached, cors);
 			}
 			let range = parsed.range;
-			if (range) {
+			// Only open-ended ranges need a pre-flight head() to enforce MAX_RANGE_SIZE_BYTES.
+			// Explicit ranges (<= 50 MB) and suffix ranges (<= 10 MB) are already bounded by parseRangeHeader.
+			if (range && isOpenEndedRange(range)) {
 				const metadata = await env.ANALYTICS_BUCKET.head(fileKey);
 				if (!metadata)
 					return createErrorResponse('Not found', 404, requestId, cors);
 				const resolved = resolveFileRange(range, metadata.size);
 				if (!resolved) {
-					const response = createErrorResponse(
-						'The requested file part is outside this file',
-						416,
+					return createRangeNotSatisfiableResponse(
+						metadata.size,
 						requestId,
 						cors,
 					);
-					response.headers.set('Content-Range', `bytes */${metadata.size}`);
-					return response;
 				}
 				if (resolved.length > MAX_RANGE_SIZE_BYTES)
 					return createErrorResponse(
@@ -131,31 +147,54 @@ export default {
 					);
 				range = resolved;
 			}
-			const object = await env.ANALYTICS_BUCKET.get(
-				fileKey,
-				range ? { range } : undefined,
-			);
+			let object: R2ObjectBody | null;
+			try {
+				object = await env.ANALYTICS_BUCKET.get(
+					fileKey,
+					range ? { range } : undefined,
+				);
+			} catch (getError) {
+				if (!range) throw getError;
+				const metadata = await env.ANALYTICS_BUCKET.head(fileKey);
+				if (!metadata)
+					return createErrorResponse('Not found', 404, requestId, cors);
+				if (!resolveFileRange(range, metadata.size)) {
+					return createRangeNotSatisfiableResponse(
+						metadata.size,
+						requestId,
+						cors,
+					);
+				}
+				throw getError;
+			}
 			if (!object)
 				return createErrorResponse('Not found', 404, requestId, cors);
-			const { response } = buildR2Response(object, range, cors);
-			cacheResponse(ctx, cacheKey, response);
-			console.info(
-				JSON.stringify({
-					message: 'Archive read completed',
-					request_id: requestId,
-					cache_hit: false,
-					latency_ms: performance.now() - start,
-				}),
-			);
+			let responseRange = range;
+			if (range) {
+				const resolved = resolveFileRange(object.range ?? range, object.size);
+				if (!resolved) {
+					await object.body?.cancel();
+					return createRangeNotSatisfiableResponse(
+						object.size,
+						requestId,
+						cors,
+					);
+				}
+				responseRange = resolved;
+			}
+			const response = buildR2Response(object, responseRange, cors);
+			cacheResponse(ctx, cacheKey, response, requestId);
+			log.info('Archive read completed', {
+				request_id: requestId,
+				cache_hit: false,
+				latency_ms: performance.now() - start,
+			});
 			return response;
 		} catch (error) {
-			console.error(
-				JSON.stringify({
-					message: 'Archive read failed',
-					request_id: requestId,
-					error: String(error),
-				}),
-			);
+			log.error('Archive read failed', {
+				request_id: requestId,
+				error,
+			});
 			return createErrorResponse(
 				'This file is temporarily unavailable. Please try again.',
 				503,

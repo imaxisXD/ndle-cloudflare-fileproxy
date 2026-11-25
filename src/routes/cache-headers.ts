@@ -2,23 +2,10 @@
  * Cache header utilities for public proxy routes
  *
  * Provides preset cache configurations for different content types:
- * - Static: Long-term caching for immutable content (flags, fonts)
- * - Dynamic: Shorter caching with stale-while-revalidate (favicons)
+ * - Dynamic: Caching with stale-while-revalidate (favicons)
  * - Error: Short-term caching for error responses
+ * - No-cache: Disables caching for invalid requests
  */
-
-/**
- * Cache preset for static, immutable assets (flags, etc.)
- * These assets never change, so cache aggressively
- */
-export const STATIC_CACHE_HEADERS: Record<string, string> = {
-	// Browser cache for 1 year
-	'Cache-Control': 'public, max-age=31536000, immutable',
-	// Cloudflare edge cache for 1 year
-	'Cloudflare-CDN-Cache-Control': 'public, max-age=31536000, immutable',
-	// Other CDNs cache for 1 year
-	'CDN-Cache-Control': 'public, max-age=31536000, immutable',
-};
 
 /**
  * Cache preset for dynamic content that rarely changes (favicons)

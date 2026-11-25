@@ -14,9 +14,10 @@ export async function hasArchiveAccess(
 	url.searchParams.set('key', fileKey);
 	const response = await fetch(url, {
 		headers: { Authorization: `Bearer ${env.FILE_ACCESS_SECRET}` },
+		redirect: 'manual',
 		signal: AbortSignal.timeout(5000),
 	});
-	if (!response.ok) {
+	if (response.status !== 200) {
 		await response.body?.cancel();
 		throw new Error(
 			`Archive access check failed with status ${response.status}`,

@@ -22,17 +22,6 @@ export interface Env
 }
 
 /**
- * Request metrics tracking
- */
-export interface RequestMetrics {
-	cacheHit: boolean;
-	bytesTransferred: number;
-	authTimeMs: number;
-	r2FetchTimeMs: number;
-	totalTimeMs: number;
-}
-
-/**
  * Parsed range result
  */
 export interface ParsedRange {

@@ -8,84 +8,76 @@
  * Returns: { faviconUrl: "...", domain: "..." }
  */
 
-import { addCorsHeaders } from '../cors';
+import { addCorsHeaders, stripCorsHeaders } from '../cors';
+import { log } from '../logging';
+import { cloneCachedResponse, type CorsContext } from '../response';
 import { DYNAMIC_CACHE_HEADERS, ERROR_CACHE_HEADERS, NO_CACHE_HEADERS } from './cache-headers';
 import { validateUrl } from './url-validation';
 
 const FAVICON_SERVICE_URL = 'https://favicon.vemetric.com';
 
 /** Create error response with cache headers */
-function createErrorResponse(
+function createFaviconErrorResponse(
 	message: string,
 	status: number,
-	origin: string | null,
-	authorizedOrigins: string,
-	cacheHeaders: Record<string, string>
+	cors: CorsContext,
+	cacheHeaders: Record<string, string>,
 ): Response {
 	const headers = new Headers(cacheHeaders);
-	addCorsHeaders(headers, origin, authorizedOrigins);
+	addCorsHeaders(headers, cors.origin, cors.authorizedOrigins);
 	return Response.json(
 		{ error: message },
 		{
 			status,
 			headers,
-		}
+		},
 	);
 }
 
 /** Create success response with cache headers */
-function createSuccessResponse(data: { faviconUrl: string; domain: string }, origin: string | null, authorizedOrigins: string): Response {
+function createSuccessResponse(data: { faviconUrl: string; domain: string }, cors: CorsContext): Response {
 	const headers = new Headers(DYNAMIC_CACHE_HEADERS);
-	addCorsHeaders(headers, origin, authorizedOrigins);
+	addCorsHeaders(headers, cors.origin, cors.authorizedOrigins);
 	return Response.json(data, {
 		status: 200,
 		headers,
 	});
 }
 
-interface FaviconContext {
-	origin: string | null;
-	authorizedOrigins: string;
-}
-
 /**
  * Handle favicon lookup requests
  * Public route - no authentication required
  */
-export async function handleFaviconRequest(request: Request, ctx: ExecutionContext, corsContext: FaviconContext): Promise<Response> {
-	const { origin, authorizedOrigins } = corsContext;
+export async function handleFaviconRequest(
+	request: Request,
+	ctx: ExecutionContext,
+	cors: CorsContext,
+	requestId?: string,
+): Promise<Response> {
 	const url = new URL(request.url);
 	const urlParam = url.searchParams.get('url');
 
 	// Validate URL parameter
 	if (!urlParam) {
-		return createErrorResponse('URL parameter is required', 400, origin, authorizedOrigins, NO_CACHE_HEADERS);
+		return createFaviconErrorResponse('URL parameter is required', 400, cors, NO_CACHE_HEADERS);
 	}
 
 	const validationResult = validateUrl(urlParam);
 
 	if ('error' in validationResult) {
-		return createErrorResponse(validationResult.error, 400, origin, authorizedOrigins, NO_CACHE_HEADERS);
+		return createFaviconErrorResponse(validationResult.error, 400, cors, NO_CACHE_HEADERS);
 	}
 
 	const { domain } = validationResult;
 
 	// Build cache key based on domain only (not full URL)
-	const cacheKeyUrl = `https://cache.internal/favicon/${domain}`;
-	const cacheKey = new Request(cacheKeyUrl);
+	const cacheKey = new Request(`https://cache.internal/favicon/${encodeURIComponent(domain)}`);
 	const cache = caches.default;
 
 	// Check cache first
 	const cached = await cache.match(cacheKey);
 	if (cached) {
-		// Clone cached response and apply current origin's CORS headers
-		const headers = new Headers(cached.headers);
-		addCorsHeaders(headers, origin, authorizedOrigins);
-		return new Response(cached.body, {
-			status: cached.status,
-			statusText: cached.statusText,
-			headers,
-		});
+		return cloneCachedResponse(cached, cors);
 	}
 
 	// Construct favicon URL
@@ -101,19 +93,41 @@ export async function handleFaviconRequest(request: Request, ctx: ExecutionConte
 			},
 		});
 
+		await response.body?.cancel();
 		if (!response.ok) {
-			return createErrorResponse('Favicon not found or not accessible', 404, origin, authorizedOrigins, ERROR_CACHE_HEADERS);
+			return createFaviconErrorResponse('Favicon not found or not accessible', 404, cors, ERROR_CACHE_HEADERS);
 		}
 	} catch (error) {
-		console.error(`Error checking favicon for domain "${domain}":`, error);
-		return createErrorResponse('Favicon not found or not accessible', 404, origin, authorizedOrigins, ERROR_CACHE_HEADERS);
+		log.error('Favicon check failed', {
+			request_id: requestId,
+			domain,
+			error,
+		});
+		return createFaviconErrorResponse('Favicon not found or not accessible', 404, cors, ERROR_CACHE_HEADERS);
 	}
 
 	// Build success response
-	const successResponse = createSuccessResponse({ faviconUrl, domain }, origin, authorizedOrigins);
+	const successResponse = createSuccessResponse({ faviconUrl, domain }, cors);
 
-	// Cache the response (non-blocking)
-	ctx.waitUntil(cache.put(cacheKey, successResponse.clone()));
+	// Strip Vary and Access-Control-* before caching so cache entries are origin-independent
+	const copy = successResponse.clone();
+	const cacheHeaders = new Headers(copy.headers);
+	stripCorsHeaders(cacheHeaders);
+	const stored = new Response(copy.body, {
+		status: copy.status,
+		statusText: copy.statusText,
+		headers: cacheHeaders,
+	});
+
+	ctx.waitUntil(
+		cache.put(cacheKey, stored).catch((error: unknown) => {
+			log.error('Favicon cache write failed', {
+				request_id: requestId,
+				domain,
+				error,
+			});
+		}),
+	);
 
 	return successResponse;
 }

@@ -1,42 +1,39 @@
 /**
- * Logging and metrics utilities
+ * Structured JSON logging utilities
  */
 
-import type { RequestMetrics } from './types';
+type LogLevel = 'info' | 'warn' | 'error';
 
-/**
- * Log request metrics as JSON
- */
-export function logMetrics(requestId: string, metrics: RequestMetrics): void {
-	const metricsLog = {
-		cache: metrics.cacheHit ? 'HIT' : 'MISS',
-		bytes: metrics.bytesTransferred,
-		auth_ms: metrics.authTimeMs.toFixed(2),
-		r2_ms: metrics.r2FetchTimeMs.toFixed(2),
-		total_ms: metrics.totalTimeMs.toFixed(2),
-	};
-	console.log(`[FileProxy] [${requestId}] 📊 METRICS: ${JSON.stringify(metricsLog)}`);
+export interface LogFields {
+	request_id?: string;
+	[key: string]: unknown;
 }
 
-/**
- * Create initial metrics object
- */
-export function createMetrics(): RequestMetrics {
-	return {
-		cacheHit: false,
-		bytesTransferred: 0,
-		authTimeMs: 0,
-		r2FetchTimeMs: 0,
-		totalTimeMs: 0,
-	};
+function formatError(error: unknown): string {
+	return error instanceof Error ? error.message : String(error);
 }
 
-/**
- * Log prefixed message for this worker
- */
+function emit(level: LogLevel, message: string, fields?: LogFields): void {
+	const entry: Record<string, unknown> = { level, message };
+	if (fields) {
+		for (const [key, value] of Object.entries(fields)) {
+			if (value !== undefined) {
+				entry[key] = key === 'error' ? formatError(value) : value;
+			}
+		}
+	}
+	const payload = JSON.stringify(entry);
+	if (level === 'error') {
+		console.error(payload);
+	} else if (level === 'warn') {
+		console.warn(payload);
+	} else {
+		console.info(payload);
+	}
+}
+
 export const log = {
-	info: (requestId: string, message: string) => console.log(`[FileProxy] [${requestId}] ${message}`),
-	warn: (requestId: string, message: string) => console.warn(`[FileProxy] [${requestId}] ⚠️ ${message}`),
-	error: (requestId: string, message: string, error?: unknown) => console.error(`[FileProxy] [${requestId}] ❌ ${message}`, error ?? ''),
-	security: (requestId: string, message: string) => console.warn(`[FileProxy] [${requestId}] 🚫 SECURITY: ${message}`),
+	info: (message: string, fields?: LogFields): void => emit('info', message, fields),
+	warn: (message: string, fields?: LogFields): void => emit('warn', message, fields),
+	error: (message: string, fields?: LogFields): void => emit('error', message, fields),
 };

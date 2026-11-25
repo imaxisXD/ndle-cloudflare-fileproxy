@@ -1,18 +1,20 @@
 import { CACHE_MAX_AGE_SECONDS, MAX_RANGE_SIZE_BYTES } from './config';
+import { stripCorsHeaders } from './cors';
+import { log } from './logging';
 
 const storedStatusHeader = 'X-Archive-Response-Status';
 
-/** Range bytes are part of the URL key, never a Range header on cache.match. */
+/** Range bytes are part of the internal URL key, never a Range header on cache.match. */
 export function buildCacheKey(
-	requestUrl: string,
+	fileKey: string,
 	userId: string,
 	range: string | undefined,
 ): Request {
-	const url = new URL(requestUrl);
-	url.search = '';
-	url.searchParams.set('_archive_cache', '2');
-	url.searchParams.set('_uid', userId);
-	url.searchParams.set('_range', range ?? 'full');
+	const url = new URL(
+		`https://archive-cache.internal/v2/${encodeURIComponent(fileKey)}`,
+	);
+	url.searchParams.set('uid', userId);
+	url.searchParams.set('range', range ?? 'full');
 	return new Request(url.toString());
 }
 
@@ -21,6 +23,7 @@ export function cacheResponse(
 	ctx: ExecutionContext,
 	cacheKey: Request,
 	response: Response,
+	requestId?: string,
 ): void {
 	const length = Number(response.headers.get('Content-Length'));
 	if (
@@ -38,19 +41,14 @@ export function cacheResponse(
 		`public, max-age=${CACHE_MAX_AGE_SECONDS}, immutable`,
 	);
 	// Authorization and current-request CORS are applied before every cache read.
-	headers.delete('Vary');
-	for (const name of [...headers.keys()]) {
-		if (name.toLowerCase().startsWith('access-control-')) headers.delete(name);
-	}
+	stripCorsHeaders(headers);
 	const stored = new Response(copy.body, { status: 200, headers });
 	ctx.waitUntil(
 		caches.default.put(cacheKey, stored).catch((error: unknown) => {
-			console.error(
-				JSON.stringify({
-					message: 'Archive cache write failed',
-					error: String(error),
-				}),
-			);
+			log.error('Archive cache write failed', {
+				request_id: requestId,
+				error,
+			});
 		}),
 	);
 }

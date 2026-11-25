@@ -4,6 +4,7 @@ import {
 } from 'cloudflare:test';
 import { env } from 'cloudflare:workers';
 import { afterEach, beforeEach, describe, expect, it, vi } from 'vitest';
+import { buildCacheKey } from './cache';
 import worker from './index';
 import type { Env } from './types';
 
@@ -47,13 +48,15 @@ async function read(
 		method?: string;
 		fileKey?: string;
 		origin?: string;
+		prefix?: string;
 		settings?: Env;
 	} = {},
 ) {
 	const ctx = createExecutionContext();
+	const prefix = options.prefix ?? '/file/';
 	const response = await worker.fetch(
 		new Request(
-			`https://proxy.test/file/${encodeURIComponent(options.fileKey ?? key)}`,
+			`https://proxy.test${prefix}${encodeURIComponent(options.fileKey ?? key)}`,
 			{
 				method: options.method ?? 'GET',
 				headers: {
@@ -72,17 +75,33 @@ async function read(
 }
 
 describe('archive access and actual Workers cache', () => {
-	it('caches distinct byte ranges as internal 200 objects and returns the correct private 206 bytes', async () => {
+	it('builds canonical unroutable internal cache keys', () => {
+		const cacheKey = buildCacheKey(
+			'archive/user_id=user%3A123/file.parquet',
+			'account123',
+			'{"offset":0,"length":4}',
+		);
+		const url = new URL(cacheKey.url);
+		expect(url.origin).toBe('https://archive-cache.internal');
+		expect(url.pathname).toBe(
+			`/v2/${encodeURIComponent('archive/user_id=user%3A123/file.parquet')}`,
+		);
+		expect(url.searchParams.get('uid')).toBe('account123');
+		expect(url.searchParams.get('range')).toBe('{"offset":0,"length":4}');
+	});
+
+	it('caches distinct byte ranges as internal 200 objects and shares canonical entries across /file and /apiv2/file', async () => {
 		const first = await read('bytes=0-3');
 		const second = await read('bytes=4-7');
 		expect(first.body).toBe('abcd');
 		expect(second.body).toBe('efgh');
 		await env.ANALYTICS_BUCKET.delete(key);
-		for (const [range, expected, contentRange] of [
-			['bytes=0-3', 'abcd', 'bytes 0-3/8'],
-			['bytes=4-7', 'efgh', 'bytes 4-7/8'],
+		for (const [range, expected, contentRange, prefix] of [
+			['bytes=0-3', 'abcd', 'bytes 0-3/8', '/file/'],
+			['bytes=0-3', 'abcd', 'bytes 0-3/8', '/apiv2/file/'],
+			['bytes=4-7', 'efgh', 'bytes 4-7/8', '/file/'],
 		]) {
-			const cached = await read(range);
+			const cached = await read(range, { prefix });
 			expect(cached.body).toBe(expected);
 			expect(cached.response.status).toBe(206);
 			expect(cached.response.headers.get('Content-Range')).toBe(contentRange);
@@ -121,6 +140,19 @@ describe('archive access and actual Workers cache', () => {
 		expect(vi.mocked(fetch).mock.calls[0][1]?.headers).toEqual({
 			Authorization: 'Bearer test-only-secret',
 		});
+		expect(vi.mocked(fetch).mock.calls[0][1]?.redirect).toBe('manual');
+	});
+
+	it('rejects 3xx redirect responses from the archive access service', async () => {
+		vi.mocked(fetch).mockImplementation(
+			async () =>
+				new Response(null, {
+					status: 302,
+					headers: { Location: 'https://evil.example/redirect' },
+				}),
+		);
+		const result = await read();
+		expect(result.response.status).toBe(503);
 	});
 
 	it('serves a granted account export and denies cached bytes when its temporary grant expires', async () => {
@@ -168,14 +200,70 @@ describe('archive access and actual Workers cache', () => {
 		expect(fetch).not.toHaveBeenCalled();
 	});
 
-	it('handles suffix, open-ended and unsatisfiable ranges with correct lengths', async () => {
+	it('skips R2 head() for explicit and suffix ranges while keeping head() for open-ended ranges', async () => {
+		let headCalls = 0;
+		const wrappedBucket = {
+			head: (fileKey: string) => {
+				headCalls += 1;
+				return env.ANALYTICS_BUCKET.head(fileKey);
+			},
+			get: (fileKey: string, options?: R2GetOptions) =>
+				env.ANALYTICS_BUCKET.get(fileKey, options),
+		} as unknown as R2Bucket;
+		const settings: Env = { ...config, ANALYTICS_BUCKET: wrappedBucket };
+
+		const explicit = await read('bytes=0-3', { settings });
+		expect(explicit.response.status).toBe(206);
+		expect(explicit.body).toBe('abcd');
+		expect(explicit.response.headers.get('Content-Range')).toBe('bytes 0-3/8');
+		expect(headCalls).toBe(0);
+
+		const suffix = await read('bytes=-3', { settings });
+		expect(suffix.response.status).toBe(206);
+		expect(suffix.body).toBe('fgh');
+		expect(suffix.response.headers.get('Content-Range')).toBe('bytes 5-7/8');
+		expect(headCalls).toBe(0);
+
+		const clamped = await read('bytes=4-99', { settings });
+		expect(clamped.response.status).toBe(206);
+		expect(clamped.body).toBe('efgh');
+		expect(clamped.response.headers.get('Content-Range')).toBe('bytes 4-7/8');
+		expect(clamped.response.headers.get('Content-Length')).toBe('4');
+		expect(headCalls).toBe(0);
+
+		const missing = await read('bytes=0-3', {
+			settings,
+			fileKey: `archive/user_id=user%3Aaccount123/year=2026/${crypto.randomUUID()}.parquet`,
+		});
+		expect(missing.response.status).toBe(404);
+		expect(headCalls).toBe(0);
+
+		const openEnded = await read('bytes=5-', { settings });
+		expect(openEnded.response.status).toBe(206);
+		expect(openEnded.body).toBe('fgh');
+		expect(headCalls).toBe(1);
+	});
+
+	it('handles suffix, open-ended, explicit out-of-bounds, and empty-file ranges with correct 416 headers', async () => {
 		const suffix = await read('bytes=-3');
 		expect(suffix.body).toBe('fgh');
 		expect(suffix.response.headers.get('Content-Range')).toBe('bytes 5-7/8');
 		expect((await read('bytes=5-')).body).toBe('fgh');
-		const outside = await read('bytes=8-');
-		expect(outside.response.status).toBe(416);
-		expect(outside.response.headers.get('Content-Range')).toBe('bytes */8');
+
+		for (const outOfBounds of ['bytes=8-', 'bytes=8-10', 'bytes=10-15']) {
+			const outside = await read(outOfBounds);
+			expect(outside.response.status).toBe(416);
+			expect(outside.response.headers.get('Content-Range')).toBe('bytes */8');
+		}
+
+		const emptyKey = `archive/user_id=user%3Aaccount123/year=2026/${crypto.randomUUID()}.parquet`;
+		await env.ANALYTICS_BUCKET.put(emptyKey, '');
+		for (const range of ['bytes=0-3', 'bytes=-3', 'bytes=0-']) {
+			const outside = await read(range, { fileKey: emptyKey });
+			expect(outside.response.status).toBe(416);
+			expect(outside.response.headers.get('Content-Range')).toBe('bytes */0');
+		}
+
 		for (const invalid of [
 			'bytes=0-1,4-5',
 			'wrong=0-1',
